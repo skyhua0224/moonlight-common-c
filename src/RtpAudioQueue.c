@@ -11,7 +11,7 @@
 // data packets, it requires non-consecutive data packets to
 // trigger the call to completeFecBlock(). Missing or OOO
 // packets will do the job.
-#define FEC_VALIDATION_MODE
+//#define FEC_VALIDATION_MODE
 #define FEC_VERBOSE
 #endif
 

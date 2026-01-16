@@ -5,7 +5,7 @@
 // This enables FEC validation mode with a synthetic drop
 // and recovered packet checks vs the original input. It
 // is on by default for debug builds.
-#define FEC_VALIDATION_MODE
+//#define FEC_VALIDATION_MODE
 #define FEC_VERBOSE
 #endif
 
