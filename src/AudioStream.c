@@ -67,6 +67,7 @@ typedef struct _QUEUED_AUDIO_PACKET {
 
 static void AudioPingThreadProc(void* context) {
     PML_AUDIO_STREAM_CONTEXT ctx = (PML_AUDIO_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     char legacyPingData[] = { 0x50, 0x49, 0x4E, 0x47 };
     LC_SOCKADDR saddr;
 
@@ -118,13 +119,18 @@ int initializeAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEX
 
 // Initialize the audio stream and start
 int initializeAudioStream(void) {
-    return initializeAudioStreamCtx(&gConnectionContext.audioContext, &gConnectionContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return initializeAudioStreamCtx(&ctx->audioContext, ctx);
 }
 
 // This is called when the RTSP SETUP message is parsed and the audio port
 // number is parsed out of it. Alternatively, it's also called if parsing fails
 // and will use the well known audio port instead.
 int notifyAudioPortNegotiationCompleteCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
+    if (ctx == NULL || ctx->connectionContext == NULL) {
+        return -1;
+    }
+    LiSetThreadConnectionContext(ctx->connectionContext);
     LC_ASSERT(!ctx->pingThreadStarted);
     LC_ASSERT(AudioPortNumber != 0);
 
@@ -147,7 +153,8 @@ int notifyAudioPortNegotiationCompleteCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
 }
 
 int notifyAudioPortNegotiationComplete(void) {
-    return notifyAudioPortNegotiationCompleteCtx(&gConnectionContext.audioContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return notifyAudioPortNegotiationCompleteCtx(&ctx->audioContext);
 }
 
 static void freePacketList(PLINKED_BLOCKING_QUEUE_ENTRY entry) {
@@ -183,7 +190,8 @@ void destroyAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
 
 // Tear down the audio stream once we're done with it
 void destroyAudioStream(void) {
-    destroyAudioStreamCtx(&gConnectionContext.audioContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    destroyAudioStreamCtx(&ctx->audioContext);
 }
 
 static bool queuePacketToLbq(PML_AUDIO_STREAM_CONTEXT ctx, PQUEUED_AUDIO_PACKET* packet) {
@@ -207,6 +215,7 @@ static bool queuePacketToLbq(PML_AUDIO_STREAM_CONTEXT ctx, PQUEUED_AUDIO_PACKET*
 }
 
 static void decodeInputData(PML_AUDIO_STREAM_CONTEXT ctx, PQUEUED_AUDIO_PACKET packet) {
+    LiSetThreadConnectionContext(ctx->connectionContext);
     // If the packet size is zero, this is a placeholder for a missing
     // packet. Trigger packet loss concealment logic in libopus by
     // invoking the decoder with a NULL buffer.
@@ -285,6 +294,7 @@ static void decodeInputData(PML_AUDIO_STREAM_CONTEXT ctx, PQUEUED_AUDIO_PACKET p
 
 static void AudioReceiveThreadProc(void* context) {
     PML_AUDIO_STREAM_CONTEXT ctx = (PML_AUDIO_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     PRTP_PACKET rtp;
     PQUEUED_AUDIO_PACKET packet;
     int queueStatus;
@@ -433,6 +443,7 @@ static void AudioDecoderThreadProc(void* context) {
     PQUEUED_AUDIO_PACKET packet;
 
     PML_AUDIO_STREAM_CONTEXT ctx = (PML_AUDIO_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     while (!PltIsThreadInterrupted(&ctx->decoderThread)) {
         err = LbqWaitForQueueElement(&ctx->packetQueue, (void**)&packet);
         if (err != LBQ_SUCCESS) {
@@ -447,6 +458,7 @@ static void AudioDecoderThreadProc(void* context) {
 }
 
 void stopAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
+    LiSetThreadConnectionContext(ctx->connectionContext);
     if (!ctx->receivedDataFromPeer) {
         Limelog("No audio traffic was ever received from the host!\n");
     }
@@ -469,12 +481,15 @@ void stopAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
 }
 
 void stopAudioStream(void) {
-    stopAudioStreamCtx(&gConnectionContext.audioContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    stopAudioStreamCtx(&ctx->audioContext);
 }
 
 int startAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, void* audioContext, int arFlags) {
     int err;
     OPUS_MULTISTREAM_CONFIGURATION chosenConfig;
+
+    LiSetThreadConnectionContext(ctx->connectionContext);
 
     if (HighQualitySurroundEnabled) {
         LC_ASSERT(HighQualitySurroundSupported);
@@ -521,7 +536,8 @@ int startAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, void* audioContext, int ar
 }
 
 int startAudioStream(void* audioContext, int arFlags) {
-    return startAudioStreamCtx(&gConnectionContext.audioContext, audioContext, arFlags);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return startAudioStreamCtx(&ctx->audioContext, audioContext, arFlags);
 }
 
 int LiGetPendingAudioFramesCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
@@ -529,7 +545,8 @@ int LiGetPendingAudioFramesCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
 }
 
 int LiGetPendingAudioFrames(void) {
-    return LiGetPendingAudioFramesCtx(&gConnectionContext.audioContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return LiGetPendingAudioFramesCtx(&ctx->audioContext);
 }
 
 int LiGetPendingAudioDurationCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
@@ -537,5 +554,6 @@ int LiGetPendingAudioDurationCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
 }
 
 int LiGetPendingAudioDuration(void) {
-    return LiGetPendingAudioDurationCtx(&gConnectionContext.audioContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return LiGetPendingAudioDurationCtx(&ctx->audioContext);
 }

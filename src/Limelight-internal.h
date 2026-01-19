@@ -17,7 +17,7 @@ typedef struct _ML_DEPACKETIZER_CONTEXT ML_DEPACKETIZER_CONTEXT, *PML_DEPACKETIZ
 
 #include "RtpVideoQueue.h"
 
-#include <enet/enet.h>
+#include "../enet/include/enet/enet.h"
 
 // Common globals
 extern int AppVersionQuad[4];
@@ -376,106 +376,121 @@ typedef struct _ML_CONNECTION_CONTEXT {
 } ML_CONNECTION_CONTEXT, *PML_CONNECTION_CONTEXT;
 
 extern ML_CONNECTION_CONTEXT gConnectionContext;
+PML_CONNECTION_CONTEXT LiGetThreadConnectionContext(void);
+
+static inline PML_CONNECTION_CONTEXT LiGetEffectiveConnectionContext(void) {
+    PML_CONNECTION_CONTEXT tctx = LiGetThreadConnectionContext();
+    return (tctx != NULL) ? tctx : &gConnectionContext;
+}
 
 // Legacy global access routed to the global connection context
 #ifndef RemoteAddrString
-#define RemoteAddrString (gConnectionContext.RemoteAddrString)
+#define RemoteAddrString (LiGetEffectiveConnectionContext()->RemoteAddrString)
 #endif
 #ifndef RemoteAddr
-#define RemoteAddr (gConnectionContext.RemoteAddr)
+#define RemoteAddr (LiGetEffectiveConnectionContext()->RemoteAddr)
 #endif
 #ifndef LocalAddr
-#define LocalAddr (gConnectionContext.LocalAddr)
+#define LocalAddr (LiGetEffectiveConnectionContext()->LocalAddr)
 #endif
 #ifndef AddrLen
-#define AddrLen (gConnectionContext.AddrLen)
+#define AddrLen (LiGetEffectiveConnectionContext()->AddrLen)
 #endif
 #ifndef StreamConfig
-#define StreamConfig (gConnectionContext.StreamConfig)
+#define StreamConfig (LiGetEffectiveConnectionContext()->StreamConfig)
 #endif
 #ifndef ListenerCallbacks
-#define ListenerCallbacks (gConnectionContext.ListenerCallbacks)
+#define ListenerCallbacks (LiGetEffectiveConnectionContext()->ListenerCallbacks)
 #endif
 #ifndef VideoCallbacks
-#define VideoCallbacks (gConnectionContext.VideoCallbacks)
+#define VideoCallbacks (LiGetEffectiveConnectionContext()->VideoCallbacks)
 #endif
 #ifndef AudioCallbacks
-#define AudioCallbacks (gConnectionContext.AudioCallbacks)
+#define AudioCallbacks (LiGetEffectiveConnectionContext()->AudioCallbacks)
 #endif
 #ifndef NegotiatedVideoFormat
-#define NegotiatedVideoFormat (gConnectionContext.NegotiatedVideoFormat)
+#define NegotiatedVideoFormat (LiGetEffectiveConnectionContext()->NegotiatedVideoFormat)
 #endif
 #ifndef ConnectionInterrupted
-#define ConnectionInterrupted (gConnectionContext.ConnectionInterrupted)
+#define ConnectionInterrupted (LiGetEffectiveConnectionContext()->ConnectionInterrupted)
 #endif
 #ifndef HighQualitySurroundSupported
-#define HighQualitySurroundSupported (gConnectionContext.HighQualitySurroundSupported)
+#define HighQualitySurroundSupported (LiGetEffectiveConnectionContext()->HighQualitySurroundSupported)
 #endif
 #ifndef HighQualitySurroundEnabled
-#define HighQualitySurroundEnabled (gConnectionContext.HighQualitySurroundEnabled)
+#define HighQualitySurroundEnabled (LiGetEffectiveConnectionContext()->HighQualitySurroundEnabled)
 #endif
 #ifndef NormalQualityOpusConfig
-#define NormalQualityOpusConfig (gConnectionContext.NormalQualityOpusConfig)
+#define NormalQualityOpusConfig (LiGetEffectiveConnectionContext()->NormalQualityOpusConfig)
 #endif
 #ifndef HighQualityOpusConfig
-#define HighQualityOpusConfig (gConnectionContext.HighQualityOpusConfig)
+#define HighQualityOpusConfig (LiGetEffectiveConnectionContext()->HighQualityOpusConfig)
 #endif
 #ifndef AudioPacketDuration
-#define AudioPacketDuration (gConnectionContext.AudioPacketDuration)
+#define AudioPacketDuration (LiGetEffectiveConnectionContext()->AudioPacketDuration)
 #endif
 #ifndef AudioEncryptionEnabled
-#define AudioEncryptionEnabled (gConnectionContext.AudioEncryptionEnabled)
+#define AudioEncryptionEnabled (LiGetEffectiveConnectionContext()->AudioEncryptionEnabled)
 #endif
 #ifndef ReferenceFrameInvalidationSupported
-#define ReferenceFrameInvalidationSupported (gConnectionContext.ReferenceFrameInvalidationSupported)
+#define ReferenceFrameInvalidationSupported (LiGetEffectiveConnectionContext()->ReferenceFrameInvalidationSupported)
 #endif
 
 #ifndef RtspPortNumber
-#define RtspPortNumber (gConnectionContext.RtspPortNumber)
+#define RtspPortNumber (LiGetEffectiveConnectionContext()->RtspPortNumber)
 #endif
 #ifndef ControlPortNumber
-#define ControlPortNumber (gConnectionContext.ControlPortNumber)
+#define ControlPortNumber (LiGetEffectiveConnectionContext()->ControlPortNumber)
 #endif
 #ifndef AudioPortNumber
-#define AudioPortNumber (gConnectionContext.AudioPortNumber)
+#define AudioPortNumber (LiGetEffectiveConnectionContext()->AudioPortNumber)
 #endif
 #ifndef VideoPortNumber
-#define VideoPortNumber (gConnectionContext.VideoPortNumber)
+#define VideoPortNumber (LiGetEffectiveConnectionContext()->VideoPortNumber)
 #endif
 #ifndef MicPortNumber
-#define MicPortNumber (gConnectionContext.MicPortNumber)
+#define MicPortNumber (LiGetEffectiveConnectionContext()->MicPortNumber)
 #endif
 
 #ifndef AudioPingPayload
-#define AudioPingPayload (gConnectionContext.AudioPingPayload)
+#define AudioPingPayload (LiGetEffectiveConnectionContext()->AudioPingPayload)
 #endif
 #ifndef VideoPingPayload
-#define VideoPingPayload (gConnectionContext.VideoPingPayload)
+#define VideoPingPayload (LiGetEffectiveConnectionContext()->VideoPingPayload)
 #endif
 #ifndef MicPingPayload
-#define MicPingPayload (gConnectionContext.MicPingPayload)
+#define MicPingPayload (LiGetEffectiveConnectionContext()->MicPingPayload)
 #endif
 #ifndef ControlConnectData
-#define ControlConnectData (gConnectionContext.ControlConnectData)
+#define ControlConnectData (LiGetEffectiveConnectionContext()->ControlConnectData)
 #endif
 
 #ifndef SunshineFeatureFlags
-#define SunshineFeatureFlags (gConnectionContext.SunshineFeatureFlags)
+#define SunshineFeatureFlags (LiGetEffectiveConnectionContext()->SunshineFeatureFlags)
 #endif
 #ifndef EncryptionFeaturesSupported
-#define EncryptionFeaturesSupported (gConnectionContext.EncryptionFeaturesSupported)
+#define EncryptionFeaturesSupported (LiGetEffectiveConnectionContext()->EncryptionFeaturesSupported)
 #endif
 #ifndef EncryptionFeaturesRequested
-#define EncryptionFeaturesRequested (gConnectionContext.EncryptionFeaturesRequested)
+#define EncryptionFeaturesRequested (LiGetEffectiveConnectionContext()->EncryptionFeaturesRequested)
 #endif
 #ifndef EncryptionFeaturesEnabled
-#define EncryptionFeaturesEnabled (gConnectionContext.EncryptionFeaturesEnabled)
+#define EncryptionFeaturesEnabled (LiGetEffectiveConnectionContext()->EncryptionFeaturesEnabled)
 #endif
 
 int initializeInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext);
 void destroyInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx);
 int startInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx);
 int stopInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx);
+
+// Debug helpers (ABI validation)
+uint32_t LiGetInputContextStructSize(void);
+uint32_t LiGetInputContextOffsetInitialized(void);
+uint32_t LiGetInputContextOffsetConnectionContext(void);
+int LiInputContextIsInitialized(PML_INPUT_STREAM_CONTEXT ctx);
+void* LiInputContextGetConnectionCtx(PML_INPUT_STREAM_CONTEXT ctx);
+PML_INPUT_STREAM_CONTEXT LiGetInputContextFromConnectionCtx(PML_CONNECTION_CONTEXT ctx);
+PML_CONNECTION_CONTEXT LiGetGlobalConnectionContextPtr(void);
 
 
 int LiSendMouseMoveEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short deltaX, short deltaY);
@@ -533,4 +548,3 @@ int performRtspHandshakeCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serv
 char* getSdpPayloadForStreamConfigCtx(PML_CONNECTION_CONTEXT ctx, int rtspClientVersion, int* length);
 
 void LiSetThreadConnectionContext(PML_CONNECTION_CONTEXT ctx);
-PML_CONNECTION_CONTEXT LiGetThreadConnectionContext(void);

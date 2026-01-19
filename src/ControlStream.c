@@ -371,8 +371,13 @@ int initializeControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx, PML_CONNECTION_CO
     return 0;
 }
 
+static inline PML_CONTROL_STREAM_CONTEXT LiGetEffectiveControlContext(void) {
+    return &LiGetEffectiveConnectionContext()->controlContext;
+}
+
 int initializeControlStream(void) {
-    return initializeControlStreamCtx(&gConnectionContext.controlContext, &gConnectionContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return initializeControlStreamCtx(&ctx->controlContext, ctx);
 }
 
 static void freeBasicLbqList(PLINKED_BLOCKING_QUEUE_ENTRY entry) {
@@ -399,7 +404,7 @@ void destroyControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
 }
 
 void destroyControlStream(void) {
-    destroyControlStreamCtx(&gConnectionContext.controlContext);
+    destroyControlStreamCtx(LiGetEffectiveControlContext());
 }
 
 void LiRequestIdrFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx);
@@ -440,7 +445,7 @@ void LiRequestIdrFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
 }
 
 void LiRequestIdrFrame(void) {
-    LiRequestIdrFrameCtx(&gConnectionContext.controlContext);
+    LiRequestIdrFrameCtx(LiGetEffectiveControlContext());
 }
 
 // Invalidate reference frames lost by the network
@@ -449,7 +454,7 @@ void connectionDetectedFrameLossCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t sta
 }
 
 void connectionDetectedFrameLoss(uint32_t startFrame, uint32_t endFrame) {
-    connectionDetectedFrameLossCtx(&gConnectionContext.controlContext, startFrame, endFrame);
+    connectionDetectedFrameLossCtx(LiGetEffectiveControlContext(), startFrame, endFrame);
 }
 
 // When we receive a frame, update the number of our current frame
@@ -459,7 +464,7 @@ void connectionReceivedCompleteFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t
 }
 
 void connectionReceivedCompleteFrame(uint32_t frameIndex) {
-    connectionReceivedCompleteFrameCtx(&gConnectionContext.controlContext, frameIndex);
+    connectionReceivedCompleteFrameCtx(LiGetEffectiveControlContext(), frameIndex);
 }
 
 void connectionSendFrameFecStatusCtx(PML_CONTROL_STREAM_CONTEXT ctx, PSS_FRAME_FEC_STATUS fecStatus) {
@@ -479,7 +484,7 @@ void connectionSendFrameFecStatusCtx(PML_CONTROL_STREAM_CONTEXT ctx, PSS_FRAME_F
 }
 
 void connectionSendFrameFecStatus(PSS_FRAME_FEC_STATUS fecStatus) {
-    connectionSendFrameFecStatusCtx(&gConnectionContext.controlContext, fecStatus);
+    connectionSendFrameFecStatusCtx(LiGetEffectiveControlContext(), fecStatus);
 }
 
 void connectionSawFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t frameIndex) {
@@ -529,7 +534,7 @@ void connectionSawFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t frameIndex) 
 }
 
 void connectionSawFrame(uint32_t frameIndex) {
-    connectionSawFrameCtx(&gConnectionContext.controlContext, frameIndex);
+    connectionSawFrameCtx(LiGetEffectiveControlContext(), frameIndex);
 }
 
 // Reads an NV control stream packet from the TCP connection
@@ -929,6 +934,7 @@ static int ignoreDisconnectIntercept(ENetHost* host, ENetEvent* event) {
 
 static void asyncCallbackThreadFunc(void* context) {
     PML_CONTROL_STREAM_CONTEXT ctx = (PML_CONTROL_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     PQUEUED_ASYNC_CALLBACK queuedCb, nextCb;
 
     while (LbqWaitForQueueElement(&ctx->asyncCallbackQueue, (void**)&queuedCb) == LBQ_SUCCESS) {
@@ -1127,6 +1133,7 @@ static void queueAsyncCallback(PML_CONTROL_STREAM_CONTEXT ctx, PNVCTL_ENET_PACKE
 
 static void controlReceiveThreadFunc(void* context) {
     PML_CONTROL_STREAM_CONTEXT ctx = (PML_CONTROL_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     int err;
 
     // This is only used for ENet
@@ -1412,6 +1419,7 @@ static void controlReceiveThreadFunc(void* context) {
 
 static void lossStatsThreadFunc(void* context) {
     PML_CONTROL_STREAM_CONTEXT ctx = (PML_CONTROL_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     BYTE_BUFFER byteBuffer;
 
     if (ctx->usePeriodicPing) {
@@ -1587,6 +1595,7 @@ static void requestInvalidateReferenceFrames(PML_CONTROL_STREAM_CONTEXT ctx, uin
 
 static void invalidateRefFramesFunc(void* context) {
     PML_CONTROL_STREAM_CONTEXT ctx = (PML_CONTROL_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     LC_ASSERT(isReferenceFrameInvalidationEnabled());
 
     while (!PltIsThreadInterrupted(&ctx->invalidateRefFramesThread)) {
@@ -1617,6 +1626,7 @@ static void invalidateRefFramesFunc(void* context) {
 
 static void requestIdrFrameFunc(void* context) {
     PML_CONTROL_STREAM_CONTEXT ctx = (PML_CONTROL_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     while (!PltIsThreadInterrupted(&ctx->requestIdrFrameThread)) {
         PltWaitForEvent(&ctx->idrFrameRequiredEvent);
         PltClearEvent(&ctx->idrFrameRequiredEvent);
@@ -1685,7 +1695,7 @@ int stopControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
 }
 
 int stopControlStream(void) {
-    return stopControlStreamCtx(&gConnectionContext.controlContext);
+    return stopControlStreamCtx(LiGetEffectiveControlContext());
 }
 
 // Called by the input stream to send a packet for Gen 5+ servers
@@ -1701,7 +1711,7 @@ int sendInputPacketOnControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx, unsigned c
 }
 
 int sendInputPacketOnControlStream(unsigned char* data, int length, uint8_t channelId, uint32_t flags, bool moreData) {
-    return sendInputPacketOnControlStreamCtx(&gConnectionContext.controlContext, data, length, channelId, flags, moreData);
+    return sendInputPacketOnControlStreamCtx(LiGetEffectiveControlContext(), data, length, channelId, flags, moreData);
 }
 
 // Called by the input stream to flush queued packets before a batching wait
@@ -1714,7 +1724,7 @@ void flushInputOnControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
 }
 
 void flushInputOnControlStream(void) {
-    flushInputOnControlStreamCtx(&gConnectionContext.controlContext);
+    flushInputOnControlStreamCtx(LiGetEffectiveControlContext());
 }
 
 bool isControlDataInTransitCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
@@ -1732,7 +1742,7 @@ bool isControlDataInTransitCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
 }
 
 bool isControlDataInTransit(void) {
-    return isControlDataInTransitCtx(&gConnectionContext.controlContext);
+    return isControlDataInTransitCtx(LiGetEffectiveControlContext());
 }
 
 bool LiGetEstimatedRttInfoCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t* estimatedRtt, uint32_t* estimatedRttVariance) {
@@ -1756,7 +1766,7 @@ bool LiGetEstimatedRttInfoCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t* estimate
 }
 
 bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVariance) {
-    return LiGetEstimatedRttInfoCtx(&gConnectionContext.controlContext, estimatedRtt, estimatedRttVariance);
+    return LiGetEstimatedRttInfoCtx(LiGetEffectiveControlContext(), estimatedRtt, estimatedRttVariance);
 }
 
 // Starts the control stream
@@ -2089,7 +2099,7 @@ int startControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
 }
 
 int startControlStream(void) {
-    return startControlStreamCtx(&gConnectionContext.controlContext);
+    return startControlStreamCtx(LiGetEffectiveControlContext());
 }
 
 bool LiGetCurrentHostDisplayHdrModeCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
@@ -2097,7 +2107,7 @@ bool LiGetCurrentHostDisplayHdrModeCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
 }
 
 bool LiGetCurrentHostDisplayHdrMode(void) {
-    return LiGetCurrentHostDisplayHdrModeCtx(&gConnectionContext.controlContext);
+    return LiGetCurrentHostDisplayHdrModeCtx(LiGetEffectiveControlContext());
 }
 
 bool LiGetHdrMetadataCtx(PML_CONTROL_STREAM_CONTEXT ctx, PSS_HDR_METADATA metadata) {
@@ -2110,6 +2120,6 @@ bool LiGetHdrMetadataCtx(PML_CONTROL_STREAM_CONTEXT ctx, PSS_HDR_METADATA metada
 }
 
 bool LiGetHdrMetadata(PSS_HDR_METADATA metadata) {
-    return LiGetHdrMetadataCtx(&gConnectionContext.controlContext, metadata);
+    return LiGetHdrMetadataCtx(LiGetEffectiveControlContext(), metadata);
 }
 

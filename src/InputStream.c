@@ -1,5 +1,6 @@
 
 #include "Limelight-internal.h"
+#include <stddef.h>
 
 #ifdef StreamConfig
 #undef StreamConfig
@@ -124,8 +125,33 @@ int initializeInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEX
   return 0;
 }
 
+uint32_t LiGetInputContextStructSize(void) {
+  return (uint32_t)sizeof(ML_INPUT_STREAM_CONTEXT);
+}
+
+uint32_t LiGetInputContextOffsetInitialized(void) {
+  return (uint32_t)offsetof(ML_INPUT_STREAM_CONTEXT, initialized);
+}
+
+uint32_t LiGetInputContextOffsetConnectionContext(void) {
+  return (uint32_t)offsetof(ML_INPUT_STREAM_CONTEXT, connectionContext);
+}
+
+int LiInputContextIsInitialized(PML_INPUT_STREAM_CONTEXT ctx) {
+  return (ctx != NULL && ctx->initialized) ? 1 : 0;
+}
+
+void* LiInputContextGetConnectionCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+  return ctx != NULL ? (void*)ctx->connectionContext : NULL;
+}
+
+static inline PML_INPUT_STREAM_CONTEXT LiGetEffectiveInputContext(void) {
+  return &LiGetEffectiveConnectionContext()->inputContext;
+}
+
 int initializeInputStream(void) {
-    return initializeInputStreamCtx(&gConnectionContext.inputContext, &gConnectionContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return initializeInputStreamCtx(&ctx->inputContext, ctx);
 }
 
 // Destroys and cleans up the input stream
@@ -160,7 +186,7 @@ void destroyInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx) {
 }
 
 void destroyInputStream(void) {
-    destroyInputStreamCtx(&gConnectionContext.inputContext);
+    destroyInputStreamCtx(LiGetEffectiveInputContext());
 }
 
 static int encryptData(PML_INPUT_STREAM_CONTEXT ctx, unsigned char *plaintext, int plaintextLen,
@@ -354,6 +380,7 @@ static void floatToNetfloat(float in, netfloat out) {
 // Input thread proc
 static void inputSendThreadProc(void *context) {
   PML_INPUT_STREAM_CONTEXT ctx = (PML_INPUT_STREAM_CONTEXT)context;
+  LiSetThreadConnectionContext(ctx->connectionContext);
   SOCK_RET err;
   PPACKET_HOLDER holder;
   uint32_t multiControllerMagicLE;
@@ -756,6 +783,9 @@ static int sendEnableHaptics(PML_INPUT_STREAM_CONTEXT ctx) {
 int startInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx) {
   int err;
 
+  Limelog("Input: starting stream ctx=%p conn=%p appver=%d\n", (void*)ctx,
+          ctx ? (void*)ctx->connectionContext : NULL, AppVersionQuad[0]);
+
   // After Gen 5, we send input on the control stream
   if (AppVersionQuad[0] < 5) {
     ctx->inputSock =
@@ -780,6 +810,8 @@ int startInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx) {
   // Allow input packets to be queued now
   ctx->initialized = true;
 
+  Limelog("Input: initialized ctx=%p initialized=%d\n", (void*)ctx, ctx->initialized);
+
   // GFE will not send haptics events without this magic packet first
   sendEnableHaptics(ctx);
 
@@ -787,7 +819,7 @@ int startInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx) {
 }
 
 int startInputStream(void) {
-    return startInputStreamCtx(&gConnectionContext.inputContext);
+    return startInputStreamCtx(LiGetEffectiveInputContext());
 }
 
 // Stops the input stream
@@ -814,7 +846,7 @@ int stopInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx) {
 }
 
 int stopInputStream(void) {
-    return stopInputStreamCtx(&gConnectionContext.inputContext);
+    return stopInputStreamCtx(LiGetEffectiveInputContext());
 }
 
 // Send a mouse move event to the streaming machine
@@ -882,7 +914,7 @@ int LiSendMouseMoveEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short deltaX, short de
 }
 
 int LiSendMouseMoveEvent(short deltaX, short deltaY) {
-    return LiSendMouseMoveEventCtx(&gConnectionContext.inputContext, deltaX, deltaY);
+    return LiSendMouseMoveEventCtx(LiGetEffectiveInputContext(), deltaX, deltaY);
 }
 
 // Send a mouse position update to the streaming machine
@@ -953,7 +985,7 @@ int LiSendMousePositionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short x, short y, 
 }
 
 int LiSendMousePositionEvent(short x, short y, short referenceWidth, short referenceHeight) {
-    return LiSendMousePositionEventCtx(&gConnectionContext.inputContext, x, y, referenceWidth, referenceHeight);
+    return LiSendMousePositionEventCtx(LiGetEffectiveInputContext(), x, y, referenceWidth, referenceHeight);
 }
 
 // Send a relative motion event using absolute position to the streaming machine
@@ -973,7 +1005,7 @@ int LiSendMouseMoveAsMousePositionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short d
 }
 
 int LiSendMouseMoveAsMousePositionEvent(short deltaX, short deltaY, short referenceWidth, short referenceHeight) {
-    return LiSendMouseMoveAsMousePositionEventCtx(&gConnectionContext.inputContext, deltaX, deltaY, referenceWidth, referenceHeight);
+    return LiSendMouseMoveAsMousePositionEventCtx(LiGetEffectiveInputContext(), deltaX, deltaY, referenceWidth, referenceHeight);
 }
 
 // Send a mouse button event to the streaming machine
@@ -1013,7 +1045,7 @@ int LiSendMouseButtonEventCtx(PML_INPUT_STREAM_CONTEXT ctx, char action, int but
 }
 
 int LiSendMouseButtonEvent(char action, int button) {
-    return LiSendMouseButtonEventCtx(&gConnectionContext.inputContext, action, button);
+    return LiSendMouseButtonEventCtx(LiGetEffectiveInputContext(), action, button);
 }
 
 // Send a key press event to the streaming machine
@@ -1099,7 +1131,7 @@ int LiSendKeyboardEvent2Ctx(PML_INPUT_STREAM_CONTEXT ctx, short keyCode, char ke
 }
 
 int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers, char flags) {
-    return LiSendKeyboardEvent2Ctx(&gConnectionContext.inputContext, keyCode, keyAction, modifiers, flags);
+    return LiSendKeyboardEvent2Ctx(LiGetEffectiveInputContext(), keyCode, keyAction, modifiers, flags);
 }
 
 int LiSendKeyboardEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short keyCode, char keyAction, char modifiers) {
@@ -1107,7 +1139,7 @@ int LiSendKeyboardEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short keyCode, char key
 }
 
 int LiSendKeyboardEvent(short keyCode, char keyAction, char modifiers) {
-  return LiSendKeyboardEvent2Ctx(&gConnectionContext.inputContext, keyCode, keyAction, modifiers, 0);
+  return LiSendKeyboardEvent2Ctx(LiGetEffectiveInputContext(), keyCode, keyAction, modifiers, 0);
 }
 
 int LiSendUtf8TextEventCtx(PML_INPUT_STREAM_CONTEXT ctx, const char *text, unsigned int length) {
@@ -1142,7 +1174,7 @@ int LiSendUtf8TextEventCtx(PML_INPUT_STREAM_CONTEXT ctx, const char *text, unsig
 }
 
 int LiSendUtf8TextEvent(const char *text, unsigned int length) {
-    return LiSendUtf8TextEventCtx(&gConnectionContext.inputContext, text, length);
+    return LiSendUtf8TextEventCtx(LiGetEffectiveInputContext(), text, length);
 }
 
 static int sendControllerEventInternal(PML_INPUT_STREAM_CONTEXT ctx, short controllerNumber,
@@ -1273,7 +1305,7 @@ int LiSendControllerEvent(int buttonFlags, unsigned char leftTrigger,
                           unsigned char rightTrigger, short leftStickX,
                           short leftStickY, short rightStickX,
                           short rightStickY) {
-    return LiSendControllerEventCtx(&gConnectionContext.inputContext, buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
+    return LiSendControllerEventCtx(LiGetEffectiveInputContext(), buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
 }
 
 // Send a controller event to the streaming machine
@@ -1293,7 +1325,7 @@ int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
                                unsigned char rightTrigger, short leftStickX,
                                short leftStickY, short rightStickX,
                                short rightStickY) {
-    return LiSendMultiControllerEventCtx(&gConnectionContext.inputContext, controllerNumber, activeGamepadMask, buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
+    return LiSendMultiControllerEventCtx(LiGetEffectiveInputContext(), controllerNumber, activeGamepadMask, buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
 }
 
 // Send a high resolution scroll event to the streaming machine
@@ -1391,7 +1423,7 @@ int LiSendHighResScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmount
 }
 
 int LiSendHighResScrollEvent(short scrollAmount) {
-    return LiSendHighResScrollEventCtx(&gConnectionContext.inputContext, scrollAmount);
+    return LiSendHighResScrollEventCtx(LiGetEffectiveInputContext(), scrollAmount);
 }
 
 // Send a scroll event to the streaming machine
@@ -1400,7 +1432,7 @@ int LiSendScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, signed char scrollClicks)
 }
 
 int LiSendScrollEvent(signed char scrollClicks) {
-    return LiSendScrollEventCtx(&gConnectionContext.inputContext, scrollClicks);
+    return LiSendScrollEventCtx(LiGetEffectiveInputContext(), scrollClicks);
 }
 
 // Send a high resolution horizontal scroll event
@@ -1445,7 +1477,7 @@ int LiSendHighResHScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmoun
 }
 
 int LiSendHighResHScrollEvent(short scrollAmount) {
-    return LiSendHighResHScrollEventCtx(&gConnectionContext.inputContext, scrollAmount);
+    return LiSendHighResHScrollEventCtx(LiGetEffectiveInputContext(), scrollAmount);
 }
 
 int LiSendHScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, signed char scrollClicks) {
@@ -1453,7 +1485,7 @@ int LiSendHScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, signed char scrollClicks
 }
 
 int LiSendHScrollEvent(signed char scrollClicks) {
-    return LiSendHScrollEventCtx(&gConnectionContext.inputContext, scrollClicks);
+    return LiSendHScrollEventCtx(LiGetEffectiveInputContext(), scrollClicks);
 }
 
 int LiSendMicrophoneControlCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t control, int sampleRate, int channelCount,
@@ -1496,7 +1528,7 @@ int LiSendMicrophoneControlCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t control, in
 
 int LiSendMicrophoneControl(uint8_t control, int sampleRate, int channelCount,
                             int bitrate) {
-    return LiSendMicrophoneControlCtx(&gConnectionContext.inputContext, control, sampleRate, channelCount, bitrate);
+    return LiSendMicrophoneControlCtx(LiGetEffectiveInputContext(), control, sampleRate, channelCount, bitrate);
 }
 
 int LiSendTouchEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t eventType, uint32_t pointerId, float x, float y,
@@ -1552,7 +1584,7 @@ int LiSendTouchEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t eventType, uint32_
 int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y,
                      float pressureOrDistance, float contactAreaMajor,
                      float contactAreaMinor, uint16_t rotation) {
-    return LiSendTouchEventCtx(&gConnectionContext.inputContext, eventType, pointerId, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation);
+    return LiSendTouchEventCtx(LiGetEffectiveInputContext(), eventType, pointerId, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation);
 }
 
 int LiSendPenEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t eventType, uint8_t toolType, uint8_t penButtons,
@@ -1617,7 +1649,7 @@ int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
                    float x, float y, float pressureOrDistance,
                    float contactAreaMajor, float contactAreaMinor,
                    uint16_t rotation, uint8_t tilt) {
-    return LiSendPenEventCtx(&gConnectionContext.inputContext, eventType, toolType, penButtons, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation, tilt);
+    return LiSendPenEventCtx(LiGetEffectiveInputContext(), eventType, toolType, penButtons, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation, tilt);
 }
 
 int LiSendControllerArrivalEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber,
@@ -1674,7 +1706,7 @@ int LiSendControllerArrivalEvent(uint8_t controllerNumber,
                                  uint16_t activeGamepadMask, uint8_t type,
                                  uint32_t supportedButtonFlags,
                                  uint16_t capabilities) {
-    return LiSendControllerArrivalEventCtx(&gConnectionContext.inputContext, controllerNumber, activeGamepadMask, type, supportedButtonFlags, capabilities);
+    return LiSendControllerArrivalEventCtx(LiGetEffectiveInputContext(), controllerNumber, activeGamepadMask, type, supportedButtonFlags, capabilities);
 }
 
 int LiSendControllerTouchEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t eventType,
@@ -1733,7 +1765,7 @@ int LiSendControllerTouchEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controll
 int LiSendControllerTouchEvent(uint8_t controllerNumber, uint8_t eventType,
                                uint32_t pointerId, float x, float y,
                                float pressure) {
-    return LiSendControllerTouchEventCtx(&gConnectionContext.inputContext, controllerNumber, eventType, pointerId, x, y, pressure);
+    return LiSendControllerTouchEventCtx(LiGetEffectiveInputContext(), controllerNumber, eventType, pointerId, x, y, pressure);
 }
 
 int LiSendControllerMotionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t motionType,
@@ -1808,7 +1840,7 @@ int LiSendControllerMotionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t control
 
 int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType,
                                 float x, float y, float z) {
-    return LiSendControllerMotionEventCtx(&gConnectionContext.inputContext, controllerNumber, motionType, x, y, z);
+    return LiSendControllerMotionEventCtx(LiGetEffectiveInputContext(), controllerNumber, motionType, x, y, z);
 }
 
 int LiSendControllerBatteryEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t batteryState,
@@ -1859,6 +1891,6 @@ int LiSendControllerBatteryEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t contro
 
 int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState,
                                  uint8_t batteryPercentage) {
-    return LiSendControllerBatteryEventCtx(&gConnectionContext.inputContext, controllerNumber, batteryState, batteryPercentage);
+    return LiSendControllerBatteryEventCtx(LiGetEffectiveInputContext(), controllerNumber, batteryState, batteryPercentage);
 }
 

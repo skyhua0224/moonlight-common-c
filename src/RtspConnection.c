@@ -1388,7 +1388,7 @@ int performRtspHandshakeCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serv
     // Let the audio stream know the port number is now finalized.
     // NB: This is needed because audio stream init happens before RTSP,
     // which is not the case for the video stream.
-    notifyAudioPortNegotiationComplete();
+    notifyAudioPortNegotiationCompleteCtx(&ctx->audioContext);
 
     sessionId = getOptionContent(response.options, "Session");
 
@@ -1675,5 +1675,6 @@ Exit:
 }
 
 int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
-    return performRtspHandshakeCtx(&gConnectionContext, serverInfo);
+  PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+  return performRtspHandshakeCtx(ctx, serverInfo);
 }

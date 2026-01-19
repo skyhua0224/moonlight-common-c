@@ -104,7 +104,8 @@ void initializeVideoDepacketizerCtx(PML_DEPACKETIZER_CONTEXT ctx, PML_CONNECTION
 }
 
 void initializeVideoDepacketizer(int pktSize) {
-    initializeVideoDepacketizerCtx(&gConnectionContext.videoContext.depacketizerContext, &gConnectionContext, pktSize);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    initializeVideoDepacketizerCtx(&ctx->videoContext.depacketizerContext, ctx, pktSize);
 }
 
 // Free the NAL chain
@@ -176,7 +177,8 @@ void stopVideoDepacketizerCtx(PML_DEPACKETIZER_CONTEXT ctx) {
 }
 
 void stopVideoDepacketizer(void) {
-    stopVideoDepacketizerCtx(&gConnectionContext.videoContext.depacketizerContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    stopVideoDepacketizerCtx(&ctx->videoContext.depacketizerContext);
 }
 
 // Cleanup video depacketizer and free malloced memory
@@ -186,7 +188,8 @@ void destroyVideoDepacketizerCtx(PML_DEPACKETIZER_CONTEXT ctx) {
 }
 
 void destroyVideoDepacketizer(void) {
-    destroyVideoDepacketizerCtx(&gConnectionContext.videoContext.depacketizerContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    destroyVideoDepacketizerCtx(&ctx->videoContext.depacketizerContext);
 }
 
 // NB: This function also ensures an additional byte for the NALU type exists after the start sequence
@@ -284,7 +287,8 @@ bool LiWaitForNextVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, VIDEO_FRAME_HANDLE
 }
 
 bool LiWaitForNextVideoFrame(VIDEO_FRAME_HANDLE* frameHandle, PDECODE_UNIT* decodeUnit) {
-    return LiWaitForNextVideoFrameCtx(&gConnectionContext.videoContext.depacketizerContext, frameHandle, decodeUnit);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return LiWaitForNextVideoFrameCtx(&ctx->videoContext.depacketizerContext, frameHandle, decodeUnit);
 }
 
 bool LiPollNextVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, VIDEO_FRAME_HANDLE* frameHandle, PDECODE_UNIT* decodeUnit) {
@@ -303,7 +307,8 @@ bool LiPollNextVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, VIDEO_FRAME_HANDLE* f
 }
 
 bool LiPollNextVideoFrame(VIDEO_FRAME_HANDLE* frameHandle, PDECODE_UNIT* decodeUnit) {
-    return LiPollNextVideoFrameCtx(&gConnectionContext.videoContext.depacketizerContext, frameHandle, decodeUnit);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return LiPollNextVideoFrameCtx(&ctx->videoContext.depacketizerContext, frameHandle, decodeUnit);
 }
 
 bool LiPeekNextVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, PDECODE_UNIT* decodeUnit) {
@@ -321,7 +326,8 @@ bool LiPeekNextVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, PDECODE_UNIT* decodeU
 }
 
 bool LiPeekNextVideoFrame(PDECODE_UNIT* decodeUnit) {
-    return LiPeekNextVideoFrameCtx(&gConnectionContext.videoContext.depacketizerContext, decodeUnit);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return LiPeekNextVideoFrameCtx(&ctx->videoContext.depacketizerContext, decodeUnit);
 }
 
 void LiWakeWaitForVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx) {
@@ -329,7 +335,8 @@ void LiWakeWaitForVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx) {
 }
 
 void LiWakeWaitForVideoFrame(void) {
-    LiWakeWaitForVideoFrameCtx(&gConnectionContext.videoContext.depacketizerContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    LiWakeWaitForVideoFrameCtx(&ctx->videoContext.depacketizerContext);
 }
 
 // Cleanup a decode unit by freeing the buffer chain and the holder
@@ -360,7 +367,8 @@ void LiCompleteVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, VIDEO_FRAME_HANDLE ha
 }
 
 void LiCompleteVideoFrame(VIDEO_FRAME_HANDLE handle, int drStatus) {
-    LiCompleteVideoFrameCtx(&gConnectionContext.videoContext.depacketizerContext, handle, drStatus);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    LiCompleteVideoFrameCtx(&ctx->videoContext.depacketizerContext, handle, drStatus);
 }
 
 static bool isSeqReferenceFrameStart(PML_DEPACKETIZER_CONTEXT ctx, PBUFFER_DESC buffer) {
@@ -786,7 +794,8 @@ void requestDecoderRefreshCtx(PML_DEPACKETIZER_CONTEXT ctx) {
 }
 
 void requestDecoderRefresh(void) {
-    requestDecoderRefreshCtx(&gConnectionContext.videoContext.depacketizerContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    requestDecoderRefreshCtx(&ctx->videoContext.depacketizerContext);
 }
 
 // Return 1 if packet is the first one in the frame
@@ -1210,7 +1219,8 @@ void notifyFrameLostCtx(PML_DEPACKETIZER_CONTEXT ctx, unsigned int frameNumber, 
 }
 
 void notifyFrameLost(unsigned int frameNumber, bool speculative) {
-    notifyFrameLostCtx(&gConnectionContext.videoContext.depacketizerContext, frameNumber, speculative);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    notifyFrameLostCtx(&ctx->videoContext.depacketizerContext, frameNumber, speculative);
 }
 
 // Add an RTP Packet to the queue
@@ -1249,7 +1259,8 @@ void queueRtpPacketCtx(PML_DEPACKETIZER_CONTEXT ctx, PRTPV_QUEUE_ENTRY queueEntr
 }
 
 void queueRtpPacket(PRTPV_QUEUE_ENTRY queueEntryPtr) {
-    queueRtpPacketCtx(&gConnectionContext.videoContext.depacketizerContext, queueEntryPtr);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    queueRtpPacketCtx(&ctx->videoContext.depacketizerContext, queueEntryPtr);
 }
 
 int LiGetPendingVideoFramesCtx(PML_DEPACKETIZER_CONTEXT ctx) {
@@ -1257,5 +1268,6 @@ int LiGetPendingVideoFramesCtx(PML_DEPACKETIZER_CONTEXT ctx) {
 }
 
 int LiGetPendingVideoFrames(void) {
-    return LiGetPendingVideoFramesCtx(&gConnectionContext.videoContext.depacketizerContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return LiGetPendingVideoFramesCtx(&ctx->videoContext.depacketizerContext);
 }

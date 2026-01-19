@@ -77,7 +77,8 @@ void initializeVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, PML_CONNECTION_CONTE
 
 // Initialize the video stream
 void initializeVideoStream(void) {
-    initializeVideoStreamCtx(&gConnectionContext.videoContext, &gConnectionContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    initializeVideoStreamCtx(&ctx->videoContext, ctx);
 }
 
 // Clean up the video stream (context)
@@ -90,12 +91,14 @@ void destroyVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
 
 // Clean up the video stream
 void destroyVideoStream(void) {
-    destroyVideoStreamCtx(&gConnectionContext.videoContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    destroyVideoStreamCtx(&ctx->videoContext);
 }
 
 // UDP Ping proc
 static void VideoPingThreadProc(void* context) {
     PML_VIDEO_STREAM_CONTEXT ctx = (PML_VIDEO_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     char legacyPingData[] = { 0x50, 0x49, 0x4E, 0x47 };
     LC_SOCKADDR saddr;
 
@@ -127,6 +130,7 @@ static void VideoPingThreadProc(void* context) {
 // Receive thread proc
 static void VideoReceiveThreadProc(void* context) {
     PML_VIDEO_STREAM_CONTEXT ctx = (PML_VIDEO_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     int err;
     int bufferSize, receiveSize, decryptedSize, minSize;
     char* buffer;
@@ -296,12 +300,14 @@ void notifyKeyFrameReceivedCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
 }
 
 void notifyKeyFrameReceived(void) {
-    notifyKeyFrameReceivedCtx(&gConnectionContext.videoContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    notifyKeyFrameReceivedCtx(&ctx->videoContext);
 }
 
 // Decoder thread proc
 static void VideoDecoderThreadProc(void* context) {
     PML_VIDEO_STREAM_CONTEXT ctx = (PML_VIDEO_STREAM_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx->connectionContext);
     while (!PltIsThreadInterrupted(&ctx->decoderThread)) {
         VIDEO_FRAME_HANDLE frameHandle;
         PDECODE_UNIT decodeUnit;
@@ -327,11 +333,13 @@ static int readFirstFrameCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
 
 // Read the first frame of the video stream
 int readFirstFrame(void) {
-    return readFirstFrameCtx(&gConnectionContext.videoContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return readFirstFrameCtx(&ctx->videoContext);
 }
 
 // Terminate the video stream (context)
 void stopVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
+    LiSetThreadConnectionContext(ctx->connectionContext);
     if (!ctx->receivedDataFromPeer) {
         Limelog("No video traffic was ever received from the host!\n");
     }
@@ -371,12 +379,15 @@ void stopVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
 
 // Terminate the video stream
 void stopVideoStream(void) {
-    stopVideoStreamCtx(&gConnectionContext.videoContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    stopVideoStreamCtx(&ctx->videoContext);
 }
 
 // Start the video stream (context)
 int startVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, void* rendererContext, int drFlags) {
     int err;
+
+    LiSetThreadConnectionContext(ctx->connectionContext);
 
     ctx->firstFrameSocket = INVALID_SOCKET;
 
@@ -477,5 +488,6 @@ int startVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, void* rendererContext, int
 
 // Start the video stream
 int startVideoStream(void* rendererContext, int drFlags) {
-    return startVideoStreamCtx(&gConnectionContext.videoContext, rendererContext, drFlags);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return startVideoStreamCtx(&ctx->videoContext, rendererContext, drFlags);
 }

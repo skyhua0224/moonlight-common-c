@@ -109,6 +109,14 @@ PML_CONNECTION_CONTEXT LiGetThreadConnectionContext(void) {
     return tls_CurrentConnectionContext;
 }
 
+    PML_CONNECTION_CONTEXT LiGetGlobalConnectionContextPtr(void) {
+        return &gConnectionContext;
+    }
+
+    PML_INPUT_STREAM_CONTEXT LiGetInputContextFromConnectionCtx(PML_CONNECTION_CONTEXT ctx) {
+        return ctx != NULL ? &ctx->inputContext : NULL;
+    }
+
 // Macros to redirect global access to context
 #define RemoteAddrString (ctx->RemoteAddrString)
 #define RemoteAddr (ctx->RemoteAddr)
@@ -180,7 +188,8 @@ void LiInterruptConnectionCtx(PML_CONNECTION_CONTEXT ctx) {
 }
 
 void LiInterruptConnection(void) {
-    LiInterruptConnectionCtx(&gConnectionContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    LiInterruptConnectionCtx(ctx);
 }
 
 // Stop the connection by undoing the step at the current stage and those before it (Context version)
@@ -264,7 +273,8 @@ void LiStopConnectionCtx(PML_CONNECTION_CONTEXT ctx) {
 }
 
 void LiStopConnection(void) {
-    LiStopConnectionCtx(&gConnectionContext);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    LiStopConnectionCtx(ctx);
 }
 
 static void terminationCallbackThreadFunc(void* context)
@@ -279,11 +289,7 @@ static void terminationCallbackThreadFunc(void* context)
 static void ClInternalConnectionTerminated(int errorCode)
 {
     int err;
-    PML_CONNECTION_CONTEXT ctx = LiGetThreadConnectionContext();
-
-    if (ctx == NULL) {
-        ctx = &gConnectionContext;
-    }
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
 
     // Avoid recursion and issuing multiple callbacks
     if (alreadyTerminated || ConnectionInterrupted) {
@@ -669,7 +675,8 @@ Cleanup:
 int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION streamConfig, PCONNECTION_LISTENER_CALLBACKS clCallbacks,
     PDECODER_RENDERER_CALLBACKS drCallbacks, PAUDIO_RENDERER_CALLBACKS arCallbacks, void* renderContext, int drFlags,
     void* audioContext, int arFlags) {
-    return LiStartConnectionCtx(&gConnectionContext, serverInfo, streamConfig, clCallbacks, drCallbacks, arCallbacks, renderContext, drFlags, audioContext, arFlags);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return LiStartConnectionCtx(ctx, serverInfo, streamConfig, clCallbacks, drCallbacks, arCallbacks, renderContext, drFlags, audioContext, arFlags);
 }
 
 const char* LiGetLaunchUrlQueryParameters(void) {

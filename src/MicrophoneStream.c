@@ -57,11 +57,15 @@ int initializeMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, PML_CONNECT
 }
 
 int initializeMicrophoneStream(void) {
-    return initializeMicrophoneStreamCtx(&gConnectionContext.micContext, &gConnectionContext);
+  PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+  return initializeMicrophoneStreamCtx(&ctx->micContext, ctx);
 }
 
 // 关闭麦克风流
 void destroyMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx) {
+  if (ctx == NULL) {
+    return;
+  }
   if (ctx->micSocket != INVALID_SOCKET) {
     closeSocket(ctx->micSocket);
     ctx->micSocket = INVALID_SOCKET;
@@ -74,7 +78,8 @@ void destroyMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx) {
 }
 
 void destroyMicrophoneStream(void) {
-    destroyMicrophoneStreamCtx(&gConnectionContext.micContext);
+  PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+  destroyMicrophoneStreamCtx(&ctx->micContext);
 }
 
 // 发送麦克风数据
@@ -98,5 +103,6 @@ int sendMicrophoneDataCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, const char* data, i
 }
 
 int sendMicrophoneData(const char* data, int length) {
-    return sendMicrophoneDataCtx(&gConnectionContext.micContext, data, length);
+  PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+  return sendMicrophoneDataCtx(&ctx->micContext, data, length);
 }

@@ -20,6 +20,16 @@ static int activeEvents = 0;
 static int activeCondVars = 0;
 
 #if defined(LC_WINDOWS)
+static LONG platformInitCount = 0;
+static SRWLOCK platformInitLock = SRWLOCK_INIT;
+#elif defined(LC_POSIX)
+static int platformInitCount = 0;
+static pthread_mutex_t platformInitMutex = PTHREAD_MUTEX_INITIALIZER;
+#else
+static int platformInitCount = 0;
+#endif
+
+#if defined(LC_WINDOWS)
 
 #pragma pack(push, 8)
 typedef struct tagTHREADNAME_INFO
@@ -473,6 +483,32 @@ bool PltSafeStrcpy(char* dest, size_t dest_size, const char* src) {
 
 int initializePlatform(void) {
     int err;
+    bool doInit = false;
+
+#if defined(LC_WINDOWS)
+    AcquireSRWLockExclusive(&platformInitLock);
+    if (platformInitCount == 0) {
+        doInit = true;
+    }
+    platformInitCount++;
+    ReleaseSRWLockExclusive(&platformInitLock);
+#elif defined(LC_POSIX)
+    pthread_mutex_lock(&platformInitMutex);
+    if (platformInitCount == 0) {
+        doInit = true;
+    }
+    platformInitCount++;
+    pthread_mutex_unlock(&platformInitMutex);
+#else
+    if (platformInitCount == 0) {
+        doInit = true;
+    }
+    platformInitCount++;
+#endif
+
+    if (!doInit) {
+        return 0;
+    }
 
     err = initializePlatformSockets();
     if (err != 0) {
@@ -490,6 +526,39 @@ int initializePlatform(void) {
 }
 
 void cleanupPlatform(void) {
+    bool doCleanup = false;
+
+#if defined(LC_WINDOWS)
+    AcquireSRWLockExclusive(&platformInitLock);
+    if (platformInitCount > 0) {
+        platformInitCount--;
+        if (platformInitCount == 0) {
+            doCleanup = true;
+        }
+    }
+    ReleaseSRWLockExclusive(&platformInitLock);
+#elif defined(LC_POSIX)
+    pthread_mutex_lock(&platformInitMutex);
+    if (platformInitCount > 0) {
+        platformInitCount--;
+        if (platformInitCount == 0) {
+            doCleanup = true;
+        }
+    }
+    pthread_mutex_unlock(&platformInitMutex);
+#else
+    if (platformInitCount > 0) {
+        platformInitCount--;
+        if (platformInitCount == 0) {
+            doCleanup = true;
+        }
+    }
+#endif
+
+    if (!doCleanup) {
+        return;
+    }
+
     exitLowLatencyMode();
 
     cleanupPlatformSockets();

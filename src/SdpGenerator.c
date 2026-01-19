@@ -678,5 +678,6 @@ char* getSdpPayloadForStreamConfigCtx(PML_CONNECTION_CONTEXT ctx, int rtspClient
 }
 
 char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
-    return getSdpPayloadForStreamConfigCtx(&gConnectionContext, rtspClientVersion, length);
+    PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+    return getSdpPayloadForStreamConfigCtx(ctx, rtspClientVersion, length);
 }
