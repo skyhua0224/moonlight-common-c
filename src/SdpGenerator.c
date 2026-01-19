@@ -1,5 +1,61 @@
 #include "Limelight-internal.h"
 
+// Macros to redirect global access to context
+#define AppVersionQuad (ctx->AppVersionQuad)
+#ifdef StreamConfig
+#undef StreamConfig
+#endif
+#ifdef RemoteAddr
+#undef RemoteAddr
+#endif
+#ifdef VideoPortNumber
+#undef VideoPortNumber
+#endif
+#ifdef RtspPortNumber
+#undef RtspPortNumber
+#endif
+#ifdef EncryptionFeaturesEnabled
+#undef EncryptionFeaturesEnabled
+#endif
+#ifdef EncryptionFeaturesSupported
+#undef EncryptionFeaturesSupported
+#endif
+#ifdef EncryptionFeaturesRequested
+#undef EncryptionFeaturesRequested
+#endif
+#ifdef NegotiatedVideoFormat
+#undef NegotiatedVideoFormat
+#endif
+#ifdef VideoCallbacks
+#undef VideoCallbacks
+#endif
+#ifdef AudioCallbacks
+#undef AudioCallbacks
+#endif
+#ifdef HighQualitySurroundSupported
+#undef HighQualitySurroundSupported
+#endif
+#ifdef HighQualitySurroundEnabled
+#undef HighQualitySurroundEnabled
+#endif
+#ifdef AudioPacketDuration
+#undef AudioPacketDuration
+#endif
+
+#define StreamConfig (ctx->StreamConfig)
+#define RemoteAddr (ctx->RemoteAddr)
+#define VideoPortNumber (ctx->VideoPortNumber)
+#define RtspPortNumber (ctx->RtspPortNumber)
+#define EncryptionFeaturesEnabled (ctx->EncryptionFeaturesEnabled)
+#define EncryptionFeaturesSupported (ctx->EncryptionFeaturesSupported)
+#define EncryptionFeaturesRequested (ctx->EncryptionFeaturesRequested)
+#define NegotiatedVideoFormat (ctx->NegotiatedVideoFormat)
+#define VideoCallbacks (ctx->VideoCallbacks)
+#define AudioCallbacks (ctx->AudioCallbacks)
+#define HighQualitySurroundSupported (ctx->HighQualitySurroundSupported)
+#define HighQualitySurroundEnabled (ctx->HighQualitySurroundEnabled)
+#define AudioPacketDuration (ctx->AudioPacketDuration)
+
 #define MAX_OPTION_NAME_LEN 128
 
 #define MAX_SDP_HEADER_LEN 128
@@ -162,7 +218,7 @@ static int addGen3Options(PSDP_OPTION* head, char* addrStr) {
     return err;
 }
 
-static int addGen4Options(PSDP_OPTION* head, char* addrStr) {
+static int addGen4Options(PML_CONNECTION_CONTEXT ctx, PSDP_OPTION* head, char* addrStr) {
     char payloadStr[92];
     int err = 0;
 
@@ -177,7 +233,7 @@ static int addGen4Options(PSDP_OPTION* head, char* addrStr) {
 #define NVFF_AUDIO_ENCRYPTION 0x20
 #define NVFF_RI_ENCRYPTION    0x80
 
-static int addGen5Options(PSDP_OPTION* head) {
+static int addGen5Options(PML_CONNECTION_CONTEXT ctx, PSDP_OPTION* head) {
     int err = 0;
     char payloadStr[32];
 
@@ -229,7 +285,7 @@ static int addGen5Options(PSDP_OPTION* head) {
             err |= addAttributeString(head, "x-nv-vqos[0].fec.repairPercent", "20");
         }
     }
-    
+
     if (APP_VERSION_AT_LEAST(7, 1, 446) && (StreamConfig.width < 720 || StreamConfig.height < 540)) {
         // We enable DRC with a static DRC table for very low resoutions on GFE 3.26 to work around
         // a bug that causes nvstreamer.exe to crash due to failing to populate a list of valid resolutions.
@@ -252,7 +308,7 @@ static int addGen5Options(PSDP_OPTION* head) {
     return err;
 }
 
-static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
+static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAddr) {
     PSDP_OPTION optionHead;
     char payloadStr[92];
     int audioChannelCount;
@@ -381,10 +437,10 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.minimumBitrate", payloadStr);
         err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.maximumBitrate", payloadStr);
     }
-    
+
     // FEC must be enabled for proper packet sequencing to be done by RTP FEC queue
     err |= addAttributeString(&optionHead, "x-nv-vqos[0].fec.enable", "1");
-    
+
     err |= addAttributeString(&optionHead, "x-nv-vqos[0].videoQualityScoreUpdateTime", "5000");
 
     // If the remote host is local (RFC 1918), enable QoS tagging for our traffic. Windows qWave
@@ -409,10 +465,10 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
         err |= addGen3Options(&optionHead, urlSafeAddr);
     }
     else if (AppVersionQuad[0] == 4) {
-        err |= addGen4Options(&optionHead, urlSafeAddr);
+        err |= addGen4Options(ctx, &optionHead, urlSafeAddr);
     }
     else {
-        err |= addGen5Options(&optionHead);
+        err |= addGen5Options(ctx, &optionHead);
     }
 
     audioChannelCount = CHANNEL_COUNT_FROM_AUDIO_CONFIGURATION(StreamConfig.audioConfiguration);
@@ -543,7 +599,7 @@ static PSDP_OPTION getAttributesList(char*urlSafeAddr) {
 }
 
 // Populate the SDP header with required information
-static int fillSdpHeader(char* buffer, size_t length, int rtspClientVersion, char*urlSafeAddr) {
+static int fillSdpHeader(PML_CONNECTION_CONTEXT ctx, char* buffer, size_t length, int rtspClientVersion, char*urlSafeAddr) {
     return snprintf(buffer, length,
         "v=0\r\n"
         "o=android 0 %d IN %s %s\r\n"
@@ -554,7 +610,7 @@ static int fillSdpHeader(char* buffer, size_t length, int rtspClientVersion, cha
 }
 
 // Populate the SDP tail with required information
-static int fillSdpTail(char* buffer, size_t length) {
+static int fillSdpTail(PML_CONNECTION_CONTEXT ctx, char* buffer, size_t length) {
     LC_ASSERT(VideoPortNumber != 0);
     return snprintf(buffer, length,
         "t=0 0\r\n"
@@ -563,7 +619,7 @@ static int fillSdpTail(char* buffer, size_t length) {
 }
 
 // Get the SDP attributes for the stream config
-char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
+char* getSdpPayloadForStreamConfigCtx(PML_CONNECTION_CONTEXT ctx, int rtspClientVersion, int* length) {
     PSDP_OPTION attributeList;
     int attributeListSize;
     int offset, written;
@@ -572,7 +628,7 @@ char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
 
     addrToUrlSafeString(&RemoteAddr, urlSafeAddr, sizeof(urlSafeAddr));
 
-    attributeList = getAttributesList(urlSafeAddr);
+    attributeList = getAttributesList(ctx, urlSafeAddr);
     if (attributeList == NULL) {
         return NULL;
     }
@@ -585,7 +641,7 @@ char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
     }
 
     offset = 0;
-    written = fillSdpHeader(payload, MAX_SDP_HEADER_LEN, rtspClientVersion, urlSafeAddr);
+    written = fillSdpHeader(ctx, payload, MAX_SDP_HEADER_LEN, rtspClientVersion, urlSafeAddr);
     if (written < 0 || written >= MAX_SDP_HEADER_LEN) {
         LC_ASSERT(false);
         free(payload);
@@ -605,7 +661,7 @@ char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
     else {
         offset += written;
     }
-    written = fillSdpTail(&payload[offset], MAX_SDP_TAIL_LEN);
+    written = fillSdpTail(ctx, &payload[offset], MAX_SDP_TAIL_LEN);
     if (written < 0 || written >= MAX_SDP_TAIL_LEN) {
         LC_ASSERT(false);
         free(payload);
@@ -619,4 +675,8 @@ char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
     freeAttributeList(attributeList);
     *length = offset;
     return payload;
+}
+
+char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length) {
+    return getSdpPayloadForStreamConfigCtx(&gConnectionContext, rtspClientVersion, length);
 }

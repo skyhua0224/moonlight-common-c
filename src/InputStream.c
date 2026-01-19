@@ -1,42 +1,34 @@
+
 #include "Limelight-internal.h"
 
-static SOCKET inputSock = INVALID_SOCKET;
-static unsigned char currentAesIv[16];
-static bool initialized;
-static bool encryptedControlStream;
-static bool needsBatchedScroll;
-static int batchedScrollDelta;
-static PPLT_CRYPTO_CONTEXT cryptoContext;
+#ifdef StreamConfig
+#undef StreamConfig
+#endif
+#ifdef SunshineFeatureFlags
+#undef SunshineFeatureFlags
+#endif
+#ifdef ListenerCallbacks
+#undef ListenerCallbacks
+#endif
+#ifdef RemoteAddr
+#undef RemoteAddr
+#endif
+#ifdef AddrLen
+#undef AddrLen
+#endif
 
-static LINKED_BLOCKING_QUEUE packetQueue;
-static LINKED_BLOCKING_QUEUE packetHolderFreeList;
-static PLT_THREAD inputSendThread;
-
-static float absCurrentPosX;
-static float absCurrentPosY;
+#define AppVersionQuad (ctx->connectionContext->AppVersionQuad)
+#define StreamConfig (ctx->connectionContext->StreamConfig)
+#define SunshineFeatureFlags (ctx->connectionContext->SunshineFeatureFlags)
+#define ListenerCallbacks (ctx->connectionContext->ListenerCallbacks)
+#define RemoteAddr (ctx->connectionContext->RemoteAddr)
+#define AddrLen (ctx->connectionContext->AddrLen)
 
 // Limited by number of bits in activeGamepadMask
 #define MAX_GAMEPADS 16
 
 // Accelerometer and gyro
 #define MAX_MOTION_EVENTS 2
-
-static uint8_t currentPenButtonState;
-
-static PLT_MUTEX batchedInputMutex;
-static struct {
-  float x, y, z;
-  bool dirty; // Update ready to send (queued packet holder in packetQueue)
-} currentGamepadSensorState[MAX_GAMEPADS][MAX_MOTION_EVENTS];
-static struct {
-  int deltaX, deltaY;
-  bool dirty; // Update ready to send (queued packet holder in packetQueue)
-} currentRelativeMouseState;
-static struct {
-  int x, y;
-  int width, height;
-  bool dirty; // Update ready to send (queued packet holder in packetQueue)
-} currentAbsoluteMouseState;
 
 #define CLAMP(val, min, max)                                                   \
   (((val) < (min)) ? (min) : (((val) > (max)) ? (max) : (val)))
@@ -96,17 +88,18 @@ typedef struct _PACKET_HOLDER {
 } PACKET_HOLDER, *PPACKET_HOLDER;
 
 // Initializes the input stream
-int initializeInputStream(void) {
-  memcpy(currentAesIv, StreamConfig.remoteInputAesIv, sizeof(currentAesIv));
+int initializeInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
+  ctx->connectionContext = connectionContext;
+  memcpy(ctx->currentAesIv, StreamConfig.remoteInputAesIv, sizeof(ctx->currentAesIv));
 
   // Set a high maximum queue size limit to ensure input isn't dropped
   // while the input send thread is blocked for short periods.
-  LbqInitializeLinkedBlockingQueue(&packetQueue, MAX_QUEUED_INPUT_PACKETS);
-  LbqInitializeLinkedBlockingQueue(&packetHolderFreeList,
+  LbqInitializeLinkedBlockingQueue(&ctx->packetQueue, MAX_QUEUED_INPUT_PACKETS);
+  LbqInitializeLinkedBlockingQueue(&ctx->packetHolderFreeList,
                                    MAX_QUEUED_INPUT_PACKETS);
 
-  cryptoContext = PltCreateCryptoContext();
-  encryptedControlStream = APP_VERSION_AT_LEAST(7, 1, 431);
+  ctx->cryptoContext = PltCreateCryptoContext();
+  ctx->encryptedControlStream = APP_VERSION_AT_LEAST(7, 1, 431);
 
   // FIXME: Unsure if this is exactly right, but it's probably good enough.
   //
@@ -115,61 +108,69 @@ int initializeInputStream(void) {
   // mouse/keyboard
   //
   // Sunshine also uses SendInput() so it's not affected either.
-  needsBatchedScroll = APP_VERSION_AT_LEAST(7, 1, 409) && !IS_SUNSHINE();
-  batchedScrollDelta = 0;
+  ctx->needsBatchedScroll = APP_VERSION_AT_LEAST(7, 1, 409) && !IS_SUNSHINE();
+  ctx->batchedScrollDelta = 0;
 
-  currentPenButtonState = 0;
+  ctx->currentPenButtonState = 0;
 
   // Start with the virtual mouse centered
-  absCurrentPosX = absCurrentPosY = 0.5f;
+  ctx->absCurrentPosX = ctx->absCurrentPosY = 0.5f;
 
-  memset(currentGamepadSensorState, 0, sizeof(currentGamepadSensorState));
-  memset(&currentRelativeMouseState, 0, sizeof(currentRelativeMouseState));
-  memset(&currentAbsoluteMouseState, 0, sizeof(currentAbsoluteMouseState));
-  PltCreateMutex(&batchedInputMutex);
+  memset(ctx->currentGamepadSensorState, 0, sizeof(ctx->currentGamepadSensorState));
+  memset(&ctx->currentRelativeMouseState, 0, sizeof(ctx->currentRelativeMouseState));
+  memset(&ctx->currentAbsoluteMouseState, 0, sizeof(ctx->currentAbsoluteMouseState));
+  PltCreateMutex(&ctx->batchedInputMutex);
 
   return 0;
 }
 
-// Destroys and cleans up the input stream
-void destroyInputStream(void) {
-  PLINKED_BLOCKING_QUEUE_ENTRY entry, nextEntry;
-
-  PltDestroyCryptoContext(cryptoContext);
-
-  entry = LbqDestroyLinkedBlockingQueue(&packetQueue);
-
-  while (entry != NULL) {
-    nextEntry = entry->flink;
-
-    // The entry is stored in the data buffer
-    free(entry->data);
-
-    entry = nextEntry;
-  }
-
-  entry = LbqDestroyLinkedBlockingQueue(&packetHolderFreeList);
-
-  while (entry != NULL) {
-    nextEntry = entry->flink;
-
-    // The entry is stored in the data buffer
-    free(entry->data);
-
-    entry = nextEntry;
-  }
-
-  PltDeleteMutex(&batchedInputMutex);
+int initializeInputStream(void) {
+    return initializeInputStreamCtx(&gConnectionContext.inputContext, &gConnectionContext);
 }
 
-static int encryptData(unsigned char *plaintext, int plaintextLen,
+// Destroys and cleans up the input stream
+void destroyInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+  PLINKED_BLOCKING_QUEUE_ENTRY entry, nextEntry;
+
+  PltDestroyCryptoContext(ctx->cryptoContext);
+
+  entry = LbqDestroyLinkedBlockingQueue(&ctx->packetQueue);
+
+  while (entry != NULL) {
+    nextEntry = entry->flink;
+
+    // The entry is stored in the data buffer
+    free(entry->data);
+
+    entry = nextEntry;
+  }
+
+  entry = LbqDestroyLinkedBlockingQueue(&ctx->packetHolderFreeList);
+
+  while (entry != NULL) {
+    nextEntry = entry->flink;
+
+    // The entry is stored in the data buffer
+    free(entry->data);
+
+    entry = nextEntry;
+  }
+
+  PltDeleteMutex(&ctx->batchedInputMutex);
+}
+
+void destroyInputStream(void) {
+    destroyInputStreamCtx(&gConnectionContext.inputContext);
+}
+
+static int encryptData(PML_INPUT_STREAM_CONTEXT ctx, unsigned char *plaintext, int plaintextLen,
                        unsigned char *ciphertext, int *ciphertextLen) {
   // Starting in Gen 7, AES GCM is used for encryption
   if (AppVersionQuad[0] >= 7) {
-    if (!PltEncryptMessage(cryptoContext, ALGORITHM_AES_GCM, 0,
+    if (!PltEncryptMessage(ctx->cryptoContext, ALGORITHM_AES_GCM, 0,
                            (unsigned char *)StreamConfig.remoteInputAesKey,
-                           sizeof(StreamConfig.remoteInputAesKey), currentAesIv,
-                           sizeof(currentAesIv), ciphertext, 16, plaintext,
+                           sizeof(StreamConfig.remoteInputAesKey), ctx->currentAesIv,
+                           sizeof(ctx->currentAesIv), ciphertext, 16, plaintext,
                            plaintextLen, &ciphertext[16], ciphertextLen)) {
       return -1;
     }
@@ -188,29 +189,29 @@ static int encryptData(unsigned char *plaintext, int plaintextLen,
     // padded to the block size to ensure messages are not delayed within the
     // cipher.
     return PltEncryptMessage(
-               cryptoContext, ALGORITHM_AES_CBC, CIPHER_FLAG_PAD_TO_BLOCK_SIZE,
+               ctx->cryptoContext, ALGORITHM_AES_CBC, CIPHER_FLAG_PAD_TO_BLOCK_SIZE,
                (unsigned char *)StreamConfig.remoteInputAesKey,
-               sizeof(StreamConfig.remoteInputAesKey), currentAesIv,
-               sizeof(currentAesIv), NULL, 0, paddedData, plaintextLen,
+               sizeof(StreamConfig.remoteInputAesKey), ctx->currentAesIv,
+               sizeof(ctx->currentAesIv), NULL, 0, paddedData, plaintextLen,
                ciphertext, ciphertextLen)
                ? 0
                : -1;
   }
 }
 
-static void freePacketHolder(PPACKET_HOLDER holder) {
+static void freePacketHolder(PML_INPUT_STREAM_CONTEXT ctx, PPACKET_HOLDER holder) {
   LC_ASSERT(holder->packet.header.size != 0);
 
   // Place the packet holder back into the free list if it's a standard size
   // entry
   if (PACKET_SIZE(holder) > (int)sizeof(*holder) ||
-      LbqOfferQueueItem(&packetHolderFreeList, holder, &holder->entry) !=
+      LbqOfferQueueItem(&ctx->packetHolderFreeList, holder, &holder->entry) !=
           LBQ_SUCCESS) {
     free(holder);
   }
 }
 
-static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
+static PPACKET_HOLDER allocatePacketHolder(PML_INPUT_STREAM_CONTEXT ctx, int extraLength) {
   PPACKET_HOLDER holder;
   int err;
 
@@ -225,7 +226,7 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
   }
 
   // Grab an entry from the free list (if available)
-  err = LbqPollQueueElement(&packetHolderFreeList, (void **)&holder);
+  err = LbqPollQueueElement(&ctx->packetHolderFreeList, (void **)&holder);
   if (err == LBQ_SUCCESS) {
     return holder;
   } else if (err == LBQ_INTERRUPTED) {
@@ -239,16 +240,30 @@ static PPACKET_HOLDER allocatePacketHolder(int extraLength) {
   }
 }
 
-static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
+static bool sendInputPacket(PML_INPUT_STREAM_CONTEXT ctx, PPACKET_HOLDER holder, bool moreData) {
   SOCK_RET err;
 
   // On GFE 3.22, the entire control stream is encrypted (and support for
   // separate RI encrypted) has been removed. We send the plaintext packet
   // through and the control stream code will do the encryption.
-  if (encryptedControlStream) {
-    err = (SOCK_RET)sendInputPacketOnControlStream(
-        (unsigned char *)&holder->packet, PACKET_SIZE(holder),
-        holder->channelId, holder->enetPacketFlags, moreData);
+  if (ctx->encryptedControlStream) {
+    // Use the context version if possible, otherwise rely on the global one (for now)
+    // or we assume ctx->controlContext is set?
+    // For now, let's keep using the global one if controlContext is null, or use the macro...
+    // Wait, the goal is to remove global dependency.
+    // If ctx->controlContext is set, use it.
+    if (ctx->connectionContext) {
+        err = (SOCK_RET)sendInputPacketOnControlStreamCtx(
+            &ctx->connectionContext->controlContext,
+            (unsigned char *)&holder->packet, PACKET_SIZE(holder),
+            holder->channelId, holder->enetPacketFlags, moreData);
+    } else {
+        // Fallback to global for legacy compatibility
+        err = (SOCK_RET)sendInputPacketOnControlStream(
+            (unsigned char *)&holder->packet, PACKET_SIZE(holder),
+            holder->channelId, holder->enetPacketFlags, moreData);
+    }
+
     if (err < 0) {
       Limelog("Input: sendInputPacketOnControlStream() failed: %d\n", (int)err);
       ListenerCallbacks.connectionTerminated(err);
@@ -263,6 +278,7 @@ static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
     // length
     encryptedSize = sizeof(encryptedBuffer) - sizeof(encryptedLengthPrefix);
     err = encryptData(
+        ctx,
         (unsigned char *)&holder->packet, PACKET_SIZE(holder),
         (unsigned char *)&encryptedBuffer[sizeof(encryptedLengthPrefix)],
         (int *)&encryptedSize);
@@ -279,7 +295,7 @@ static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
 
     if (AppVersionQuad[0] < 5) {
       // Send the encrypted payload
-      err = send(inputSock, (const char *)encryptedBuffer,
+      err = send(ctx->inputSock, (const char *)encryptedBuffer,
                  (int)(encryptedSize + sizeof(encryptedLengthPrefix)), 0);
       if (err <= 0) {
         Limelog("Input: send() failed: %d\n", (int)LastSocketError());
@@ -292,16 +308,25 @@ static bool sendInputPacket(PPACKET_HOLDER holder, bool moreData) {
       // for future encryption. I think it may be a buffer overrun on their end
       // but we'll have to mimic it to work correctly.
       if (AppVersionQuad[0] >= 7 &&
-          encryptedSize >= 16 + sizeof(currentAesIv)) {
-        memcpy(currentAesIv,
-               &encryptedBuffer[4 + encryptedSize - sizeof(currentAesIv)],
-               sizeof(currentAesIv));
+          encryptedSize >= 16 + sizeof(ctx->currentAesIv)) {
+        memcpy(ctx->currentAesIv,
+               &encryptedBuffer[4 + encryptedSize - sizeof(ctx->currentAesIv)],
+               sizeof(ctx->currentAesIv));
       }
 
-      err = (SOCK_RET)sendInputPacketOnControlStream(
-          (unsigned char *)encryptedBuffer,
-          (int)(encryptedSize + sizeof(encryptedLengthPrefix)),
-          holder->channelId, holder->enetPacketFlags, moreData);
+      if (ctx->connectionContext) {
+          err = (SOCK_RET)sendInputPacketOnControlStreamCtx(
+              &ctx->connectionContext->controlContext,
+              (unsigned char *)encryptedBuffer,
+              (int)(encryptedSize + sizeof(encryptedLengthPrefix)),
+              holder->channelId, holder->enetPacketFlags, moreData);
+      } else {
+          err = (SOCK_RET)sendInputPacketOnControlStream(
+              (unsigned char *)encryptedBuffer,
+              (int)(encryptedSize + sizeof(encryptedLengthPrefix)),
+              holder->channelId, holder->enetPacketFlags, moreData);
+      }
+
       if (err < 0) {
         Limelog("Input: sendInputPacketOnControlStream() failed: %d\n",
                 (int)err);
@@ -328,6 +353,7 @@ static void floatToNetfloat(float in, netfloat out) {
 
 // Input thread proc
 static void inputSendThreadProc(void *context) {
+  PML_INPUT_STREAM_CONTEXT ctx = (PML_INPUT_STREAM_CONTEXT)context;
   SOCK_RET err;
   PPACKET_HOLDER holder;
   uint32_t multiControllerMagicLE;
@@ -345,8 +371,8 @@ static void inputSendThreadProc(void *context) {
   uint64_t lastMousePacketTime = 0;
   uint64_t lastPenPacketTime = 0;
 
-  while (!PltIsThreadInterrupted(&inputSendThread)) {
-    err = LbqWaitForQueueElement(&packetQueue, (void **)&holder);
+  while (!PltIsThreadInterrupted(&ctx->inputSendThread)) {
+    err = LbqWaitForQueueElement(&ctx->packetQueue, (void **)&holder);
     if (err != LBQ_SUCCESS) {
       return;
     }
@@ -364,7 +390,7 @@ static void inputSendThreadProc(void *context) {
       // Delay for batching if required
       if (now < lastControllerPacketTime[controllerNumber] +
                     CONTROLLER_BATCHING_INTERVAL_MS) {
-        flushInputOnControlStream();
+        flushInputOnControlStreamCtx(&ctx->connectionContext->controlContext);
         PltSleepMs((int)(lastControllerPacketTime[controllerNumber] +
                          CONTROLLER_BATCHING_INTERVAL_MS - now));
         now = PltGetMillis();
@@ -376,7 +402,7 @@ static void inputSendThreadProc(void *context) {
 
         // Peek at the next packet
         if (LbqPeekQueueElement(
-                &packetQueue, (void **)&controllerBatchHolder) != LBQ_SUCCESS) {
+          &ctx->packetQueue, (void **)&controllerBatchHolder) != LBQ_SUCCESS) {
           break;
         }
 
@@ -404,7 +430,7 @@ static void inputSendThreadProc(void *context) {
 
         // Remove the batchable controller packet
         if (LbqPollQueueElement(
-                &packetQueue, (void **)&controllerBatchHolder) != LBQ_SUCCESS) {
+          &ctx->packetQueue, (void **)&controllerBatchHolder) != LBQ_SUCCESS) {
           break;
         }
 
@@ -417,7 +443,7 @@ static void inputSendThreadProc(void *context) {
         origPkt->rightStickY = newPkt->rightStickY;
 
         // Free the batched packet holder
-        freePacketHolder(controllerBatchHolder);
+        freePacketHolder(ctx, controllerBatchHolder);
       }
 
       lastControllerPacketTime[controllerNumber] = now;
@@ -428,69 +454,69 @@ static void inputSendThreadProc(void *context) {
 
       // Delay for batching if required
       if (now < lastMousePacketTime + MOUSE_BATCHING_INTERVAL_MS) {
-        flushInputOnControlStream();
+        flushInputOnControlStreamCtx(&ctx->connectionContext->controlContext);
         PltSleepMs(
             (int)(lastMousePacketTime + MOUSE_BATCHING_INTERVAL_MS - now));
         now = PltGetMillis();
       }
 
-      PltLockMutex(&batchedInputMutex);
+      PltLockMutex(&ctx->batchedInputMutex);
 
       // Send as many packets as it takes to get the entire delta through
-      while (currentRelativeMouseState.deltaX != 0 ||
-             currentRelativeMouseState.deltaY != 0) {
+      while (ctx->currentRelativeMouseState.deltaX != 0 ||
+             ctx->currentRelativeMouseState.deltaY != 0) {
         bool more = false;
 
-        if (currentRelativeMouseState.deltaX < INT16_MIN) {
+        if (ctx->currentRelativeMouseState.deltaX < INT16_MIN) {
           holder->packet.mouseMoveRel.deltaX = BE16(INT16_MIN);
-          currentRelativeMouseState.deltaX -= INT16_MIN;
+          ctx->currentRelativeMouseState.deltaX -= INT16_MIN;
           more = true;
-        } else if (currentRelativeMouseState.deltaX > INT16_MAX) {
+        } else if (ctx->currentRelativeMouseState.deltaX > INT16_MAX) {
           holder->packet.mouseMoveRel.deltaX = BE16(INT16_MAX);
-          currentRelativeMouseState.deltaX -= INT16_MAX;
+          ctx->currentRelativeMouseState.deltaX -= INT16_MAX;
           more = true;
         } else {
           holder->packet.mouseMoveRel.deltaX =
-              BE16(currentRelativeMouseState.deltaX);
-          currentRelativeMouseState.deltaX = 0;
+              BE16(ctx->currentRelativeMouseState.deltaX);
+          ctx->currentRelativeMouseState.deltaX = 0;
         }
 
-        if (currentRelativeMouseState.deltaY < INT16_MIN) {
+        if (ctx->currentRelativeMouseState.deltaY < INT16_MIN) {
           holder->packet.mouseMoveRel.deltaY = BE16(INT16_MIN);
-          currentRelativeMouseState.deltaY -= INT16_MIN;
+          ctx->currentRelativeMouseState.deltaY -= INT16_MIN;
           more = true;
-        } else if (currentRelativeMouseState.deltaY > INT16_MAX) {
+        } else if (ctx->currentRelativeMouseState.deltaY > INT16_MAX) {
           holder->packet.mouseMoveRel.deltaY = BE16(INT16_MAX);
-          currentRelativeMouseState.deltaY -= INT16_MAX;
+          ctx->currentRelativeMouseState.deltaY -= INT16_MAX;
           more = true;
         } else {
           holder->packet.mouseMoveRel.deltaY =
-              BE16(currentRelativeMouseState.deltaY);
-          currentRelativeMouseState.deltaY = 0;
+              BE16(ctx->currentRelativeMouseState.deltaY);
+          ctx->currentRelativeMouseState.deltaY = 0;
         }
 
         // Don't hold the batching lock while we're doing network I/O
-        PltUnlockMutex(&batchedInputMutex);
+        PltUnlockMutex(&ctx->batchedInputMutex);
 
         // Encrypt and send the split packet
-        if (!sendInputPacket(holder, more)) {
-          freePacketHolder(holder);
+        if (!sendInputPacket(ctx, holder, more)) {
+          freePacketHolder(ctx, holder);
           return;
         }
 
-        PltLockMutex(&batchedInputMutex);
+        PltLockMutex(&ctx->batchedInputMutex);
       }
 
       // The state change is no longer pending
-      currentRelativeMouseState.dirty = false;
+      ctx->currentRelativeMouseState.dirty = false;
 
-      PltUnlockMutex(&batchedInputMutex);
+      PltUnlockMutex(&ctx->batchedInputMutex);
 
       lastMousePacketTime = now;
 
       // We sent everything we needed in the loop above, so we can just free the
       // holder of the original packet and wait for another input event.
-      freePacketHolder(holder);
+      freePacketHolder(ctx, holder);
       continue;
     }
     // If it's an absolute mouse move packet, we should only send the latest
@@ -499,17 +525,17 @@ static void inputSendThreadProc(void *context) {
 
       // Delay for batching if required
       if (now < lastMousePacketTime + MOUSE_BATCHING_INTERVAL_MS) {
-        flushInputOnControlStream();
+        flushInputOnControlStreamCtx(&ctx->connectionContext->controlContext);
         PltSleepMs(
             (int)(lastMousePacketTime + MOUSE_BATCHING_INTERVAL_MS - now));
         now = PltGetMillis();
       }
 
-      PltLockMutex(&batchedInputMutex);
+      PltLockMutex(&ctx->batchedInputMutex);
 
       // Populate the packet with the latest state
-      holder->packet.mouseMoveAbs.x = BE16(currentAbsoluteMouseState.x);
-      holder->packet.mouseMoveAbs.y = BE16(currentAbsoluteMouseState.y);
+      holder->packet.mouseMoveAbs.x = BE16(ctx->currentAbsoluteMouseState.x);
+      holder->packet.mouseMoveAbs.y = BE16(ctx->currentAbsoluteMouseState.y);
 
       // There appears to be a rounding error in GFE's scaling calculation which
       // prevents the cursor from reaching the far edge of the screen when
@@ -517,15 +543,15 @@ static void inputSendThreadProc(void *context) {
       // streaming 720p with a desktop resolution of 1080p, or streaming
       // 720p/1080p with a desktop resolution of 4K). Subtracting one from the
       // reference dimensions seems to work around this issue.
-      holder->packet.mouseMoveAbs.width =
-          BE16(currentAbsoluteMouseState.width - 1);
-      holder->packet.mouseMoveAbs.height =
-          BE16(currentAbsoluteMouseState.height - 1);
+        holder->packet.mouseMoveAbs.width =
+          BE16(ctx->currentAbsoluteMouseState.width - 1);
+        holder->packet.mouseMoveAbs.height =
+          BE16(ctx->currentAbsoluteMouseState.height - 1);
 
       // The state change is no longer pending
-      currentAbsoluteMouseState.dirty = false;
+      ctx->currentAbsoluteMouseState.dirty = false;
 
-      PltUnlockMutex(&batchedInputMutex);
+      PltUnlockMutex(&ctx->batchedInputMutex);
 
       lastMousePacketTime = now;
     }
@@ -536,7 +562,7 @@ static void inputSendThreadProc(void *context) {
 
       // Delay for batching if required
       if (now < lastPenPacketTime + PEN_BATCHING_INTERVAL_MS) {
-        flushInputOnControlStream();
+        flushInputOnControlStreamCtx(&ctx->connectionContext->controlContext);
         PltSleepMs((int)(lastPenPacketTime + PEN_BATCHING_INTERVAL_MS - now));
         now = PltGetMillis();
       }
@@ -545,7 +571,7 @@ static void inputSendThreadProc(void *context) {
         PPACKET_HOLDER penBatchHolder;
 
         // Peek at the next packet
-        if (LbqPeekQueueElement(&packetQueue, (void **)&penBatchHolder) !=
+        if (LbqPeekQueueElement(&ctx->packetQueue, (void **)&penBatchHolder) !=
             LBQ_SUCCESS) {
           break;
         }
@@ -564,13 +590,13 @@ static void inputSendThreadProc(void *context) {
         }
 
         // Remove the next packet
-        if (LbqPollQueueElement(&packetQueue, (void **)&penBatchHolder) !=
+        if (LbqPollQueueElement(&ctx->packetQueue, (void **)&penBatchHolder) !=
             LBQ_SUCCESS) {
           break;
         }
 
         // Replace the current packet with the new one
-        freePacketHolder(holder);
+        freePacketHolder(ctx, holder);
         holder = penBatchHolder;
       }
 
@@ -585,13 +611,13 @@ static void inputSendThreadProc(void *context) {
       LC_ASSERT(controllerNumber < MAX_GAMEPADS);
       LC_ASSERT(motionType - 1 < MAX_MOTION_EVENTS);
 
-      PltLockMutex(&batchedInputMutex);
+      PltLockMutex(&ctx->batchedInputMutex);
 
       // LI_MOTION_TYPE_* values are 1-based, so we have to subtract 1 to index
       // into our state array
-      float x = currentGamepadSensorState[controllerNumber][motionType - 1].x;
-      float y = currentGamepadSensorState[controllerNumber][motionType - 1].y;
-      float z = currentGamepadSensorState[controllerNumber][motionType - 1].z;
+      float x = ctx->currentGamepadSensorState[controllerNumber][motionType - 1].x;
+      float y = ctx->currentGamepadSensorState[controllerNumber][motionType - 1].y;
+      float z = ctx->currentGamepadSensorState[controllerNumber][motionType - 1].z;
 
       // Motion events are so rapid that we can just drop any events that are
       // lost in transit, but we will treat (0, 0, 0) as a special value for
@@ -611,9 +637,9 @@ static void inputSendThreadProc(void *context) {
       floatToNetfloat(z, holder->packet.controllerMotion.z);
 
       // The state change is no longer pending
-      currentGamepadSensorState[controllerNumber][motionType - 1].dirty = false;
+      ctx->currentGamepadSensorState[controllerNumber][motionType - 1].dirty = false;
 
-      PltUnlockMutex(&batchedInputMutex);
+      PltUnlockMutex(&ctx->batchedInputMutex);
     }
     // If it's a UTF-8 text packet, we may need to split it into a several
     // packets to send
@@ -627,9 +653,9 @@ static void inputSendThreadProc(void *context) {
       // make sure any previous keyboard events have been processed prior to
       // sending these UTF-8 events to avoid interference between the two
       // (especially with modifier keys).
-      flushInputOnControlStream();
-      while (!PltIsThreadInterrupted(&inputSendThread) &&
-             isControlDataInTransit()) {
+      flushInputOnControlStreamCtx(&ctx->connectionContext->controlContext);
+      while (!PltIsThreadInterrupted(&ctx->inputSendThread) &&
+             isControlDataInTransitCtx(&ctx->connectionContext->controlContext)) {
         PltSleepMs(10);
       }
 
@@ -640,7 +666,7 @@ static void inputSendThreadProc(void *context) {
       // We send each Unicode code point individually. This way we can always
       // ensure they will never straddle a packet boundary (which will cause a
       // parsing error on the host).
-      while (i < totalLength && !PltIsThreadInterrupted(&inputSendThread)) {
+      while (i < totalLength && !PltIsThreadInterrupted(&ctx->inputSendThread)) {
         uint32_t codePointLength;
         uint8_t firstByte = (uint8_t)holder->packet.unicode.text[i];
         if ((firstByte & 0x80) == 0x00) {
@@ -670,31 +696,31 @@ static void inputSendThreadProc(void *context) {
                codePointLength);
 
         // Encrypt and send the split packet
-        if (!sendInputPacket(&splitPacket, i + 1 < totalLength)) {
-          freePacketHolder(holder);
+        if (!sendInputPacket(ctx, &splitPacket, i + 1 < totalLength)) {
+          freePacketHolder(ctx, holder);
           return;
         }
 
         i += codePointLength;
       }
 
-      freePacketHolder(holder);
+      freePacketHolder(ctx, holder);
       continue;
     }
 
     // Encrypt and send the input packet
-    if (!sendInputPacket(holder, LbqGetItemCount(&packetQueue) > 0)) {
-      freePacketHolder(holder);
+    if (!sendInputPacket(ctx, holder, LbqGetItemCount(&ctx->packetQueue) > 0)) {
+      freePacketHolder(ctx, holder);
       return;
     }
 
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 }
 
 // This function tells GFE that we support haptics and it should send rumble
 // events to us
-static int sendEnableHaptics(void) {
+static int sendEnableHaptics(PML_INPUT_STREAM_CONTEXT ctx) {
   PPACKET_HOLDER holder;
   int err;
 
@@ -704,7 +730,7 @@ static int sendEnableHaptics(void) {
     return 0;
   }
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -716,79 +742,87 @@ static int sendEnableHaptics(void) {
   holder->packet.haptics.header.magic = LE32(ENABLE_HAPTICS_MAGIC);
   holder->packet.haptics.enable = LE16(1);
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
 // Begin the input stream
-int startInputStream(void) {
+int startInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx) {
   int err;
 
   // After Gen 5, we send input on the control stream
   if (AppVersionQuad[0] < 5) {
-    inputSock =
+    ctx->inputSock =
         connectTcpSocket(&RemoteAddr, AddrLen, 35043, INPUT_STREAM_TIMEOUT_SEC);
-    if (inputSock == INVALID_SOCKET) {
+    if (ctx->inputSock == INVALID_SOCKET) {
       return LastSocketFail();
     }
 
-    enableNoDelay(inputSock);
+    enableNoDelay(ctx->inputSock);
   }
 
-  err =
-      PltCreateThread("InputSend", inputSendThreadProc, NULL, &inputSendThread);
+    err =
+      PltCreateThread("InputSend", inputSendThreadProc, ctx, &ctx->inputSendThread);
   if (err != 0) {
-    if (inputSock != INVALID_SOCKET) {
-      closeSocket(inputSock);
-      inputSock = INVALID_SOCKET;
+    if (ctx->inputSock != INVALID_SOCKET) {
+      closeSocket(ctx->inputSock);
+      ctx->inputSock = INVALID_SOCKET;
     }
     return err;
   }
 
   // Allow input packets to be queued now
-  initialized = true;
+  ctx->initialized = true;
 
   // GFE will not send haptics events without this magic packet first
-  sendEnableHaptics();
+  sendEnableHaptics(ctx);
 
   return err;
 }
 
+int startInputStream(void) {
+    return startInputStreamCtx(&gConnectionContext.inputContext);
+}
+
 // Stops the input stream
-int stopInputStream(void) {
+int stopInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx) {
   // No more packets should be queued now
-  initialized = false;
-  LbqSignalQueueShutdown(&packetHolderFreeList);
+  ctx->initialized = false;
+  LbqSignalQueueShutdown(&ctx->packetHolderFreeList);
 
   // Signal the input send thread to drain all pending
   // input packets before shutting down.
-  LbqSignalQueueDrain(&packetQueue);
-  PltJoinThread(&inputSendThread);
+  LbqSignalQueueDrain(&ctx->packetQueue);
+  PltJoinThread(&ctx->inputSendThread);
 
-  if (inputSock != INVALID_SOCKET) {
-    shutdownTcpSocket(inputSock);
+  if (ctx->inputSock != INVALID_SOCKET) {
+    shutdownTcpSocket(ctx->inputSock);
   }
 
-  if (inputSock != INVALID_SOCKET) {
-    closeSocket(inputSock);
-    inputSock = INVALID_SOCKET;
+  if (ctx->inputSock != INVALID_SOCKET) {
+    closeSocket(ctx->inputSock);
+    ctx->inputSock = INVALID_SOCKET;
   }
 
   return 0;
 }
 
+int stopInputStream(void) {
+    return stopInputStreamCtx(&gConnectionContext.inputContext);
+}
+
 // Send a mouse move event to the streaming machine
-int LiSendMouseMoveEvent(short deltaX, short deltaY) {
+int LiSendMouseMoveEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short deltaX, short deltaY) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -796,17 +830,17 @@ int LiSendMouseMoveEvent(short deltaX, short deltaY) {
     return 0;
   }
 
-  PltLockMutex(&batchedInputMutex);
+  PltLockMutex(&ctx->batchedInputMutex);
 
   // Combine the previous deltas with the new one
-  currentRelativeMouseState.deltaX += deltaX;
-  currentRelativeMouseState.deltaY += deltaY;
+  ctx->currentRelativeMouseState.deltaX += deltaX;
+  ctx->currentRelativeMouseState.deltaY += deltaY;
 
   // Queue a packet holder if this is the only pending relative mouse event
-  if (!currentRelativeMouseState.dirty) {
-    holder = allocatePacketHolder(0);
+  if (!ctx->currentRelativeMouseState.dirty) {
+    holder = allocatePacketHolder(ctx, 0);
     if (holder == NULL) {
-      PltUnlockMutex(&batchedInputMutex);
+      PltUnlockMutex(&ctx->batchedInputMutex);
       return -1;
     }
 
@@ -829,47 +863,51 @@ int LiSendMouseMoveEvent(short deltaX, short deltaY) {
     // Remaining fields are set in the input thread based on the latest
     // currentRelativeMouseState values
 
-    err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+    err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
     if (err == LBQ_SUCCESS) {
-      currentRelativeMouseState.dirty = true;
+      ctx->currentRelativeMouseState.dirty = true;
     } else {
       LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
       Limelog("Input queue reached maximum size limit\n");
-      freePacketHolder(holder);
+      freePacketHolder(ctx, holder);
     }
   } else {
     // There's already a packet holder queued to send this event
     err = 0;
   }
 
-  PltUnlockMutex(&batchedInputMutex);
+  PltUnlockMutex(&ctx->batchedInputMutex);
 
   return err;
 }
 
+int LiSendMouseMoveEvent(short deltaX, short deltaY) {
+    return LiSendMouseMoveEventCtx(&gConnectionContext.inputContext, deltaX, deltaY);
+}
+
 // Send a mouse position update to the streaming machine
-int LiSendMousePositionEvent(short x, short y, short referenceWidth,
+int LiSendMousePositionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short x, short y, short referenceWidth,
                              short referenceHeight) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
-  PltLockMutex(&batchedInputMutex);
+  PltLockMutex(&ctx->batchedInputMutex);
 
   // Overwrite the previous mouse location with the new one
-  currentAbsoluteMouseState.x = x;
-  currentAbsoluteMouseState.y = y;
-  currentAbsoluteMouseState.width = referenceWidth;
-  currentAbsoluteMouseState.height = referenceHeight;
+  ctx->currentAbsoluteMouseState.x = x;
+  ctx->currentAbsoluteMouseState.y = y;
+  ctx->currentAbsoluteMouseState.width = referenceWidth;
+  ctx->currentAbsoluteMouseState.height = referenceHeight;
 
   // Queue a packet holder if this is the only pending absolute mouse event
-  if (!currentAbsoluteMouseState.dirty) {
-    holder = allocatePacketHolder(0);
+  if (!ctx->currentAbsoluteMouseState.dirty) {
+    holder = allocatePacketHolder(ctx, 0);
     if (holder == NULL) {
-      PltUnlockMutex(&batchedInputMutex);
+      PltUnlockMutex(&ctx->batchedInputMutex);
       return -1;
     }
 
@@ -887,58 +925,67 @@ int LiSendMousePositionEvent(short x, short y, short referenceWidth,
     // Remaining fields are set in the input thread based on the latest
     // currentAbsoluteMouseState values
 
-    err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+    err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
     if (err == LBQ_SUCCESS) {
-      currentAbsoluteMouseState.dirty = true;
+      ctx->currentAbsoluteMouseState.dirty = true;
     } else {
       LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
       Limelog("Input queue reached maximum size limit\n");
-      freePacketHolder(holder);
+      freePacketHolder(ctx, holder);
     }
   } else {
     // There's already a packet holder queued to send this event
     err = 0;
   }
 
-  PltUnlockMutex(&batchedInputMutex);
+  PltUnlockMutex(&ctx->batchedInputMutex);
 
   // This is not thread safe, but it's not a big deal because callers that want
   // to use LiSendRelativeMotionAsMousePositionEvent() must not mix these
   // function without synchronization (otherwise the state of the cursor on the
   // host is undefined anyway).
-  absCurrentPosX =
+  ctx->absCurrentPosX =
       CLAMP(x, 0, referenceWidth - 1) / (float)(referenceWidth - 1);
-  absCurrentPosY =
+  ctx->absCurrentPosY =
       CLAMP(y, 0, referenceHeight - 1) / (float)(referenceHeight - 1);
 
   return err;
 }
 
+int LiSendMousePositionEvent(short x, short y, short referenceWidth, short referenceHeight) {
+    return LiSendMousePositionEventCtx(&gConnectionContext.inputContext, x, y, referenceWidth, referenceHeight);
+}
+
 // Send a relative motion event using absolute position to the streaming machine
-int LiSendMouseMoveAsMousePositionEvent(short deltaX, short deltaY,
+int LiSendMouseMoveAsMousePositionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short deltaX, short deltaY,
                                         short referenceWidth,
                                         short referenceHeight) {
   // Convert the current position to be relative to the provided reference
   // dimensions
-  short oldPositionX = (short)(absCurrentPosX * referenceWidth);
-  short oldPositionY = (short)(absCurrentPosY * referenceHeight);
+  short oldPositionX = (short)(ctx->absCurrentPosX * referenceWidth);
+  short oldPositionY = (short)(ctx->absCurrentPosY * referenceHeight);
 
-  return LiSendMousePositionEvent(
+  return LiSendMousePositionEventCtx(
+      ctx,
       CLAMP(oldPositionX + deltaX, 0, referenceWidth),
       CLAMP(oldPositionY + deltaY, 0, referenceHeight), referenceWidth,
       referenceHeight);
 }
 
+int LiSendMouseMoveAsMousePositionEvent(short deltaX, short deltaY, short referenceWidth, short referenceHeight) {
+    return LiSendMouseMoveAsMousePositionEventCtx(&gConnectionContext.inputContext, deltaX, deltaY, referenceWidth, referenceHeight);
+}
+
 // Send a mouse button event to the streaming machine
-int LiSendMouseButtonEvent(char action, int button) {
+int LiSendMouseButtonEventCtx(PML_INPUT_STREAM_CONTEXT ctx, char action, int button) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -955,27 +1002,31 @@ int LiSendMouseButtonEvent(char action, int button) {
       LE32(holder->packet.mouseButton.header.magic);
   holder->packet.mouseButton.button = (uint8_t)button;
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
+int LiSendMouseButtonEvent(char action, int button) {
+    return LiSendMouseButtonEventCtx(&gConnectionContext.inputContext, action, button);
+}
+
 // Send a key press event to the streaming machine
-int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers,
+int LiSendKeyboardEvent2Ctx(PML_INPUT_STREAM_CONTEXT ctx, short keyCode, char keyAction, char modifiers,
                          char flags) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -1037,29 +1088,37 @@ int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers,
   holder->packet.keyboard.modifiers = modifiers;
   holder->packet.keyboard.zero2 = 0;
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
-int LiSendKeyboardEvent(short keyCode, char keyAction, char modifiers) {
-  return LiSendKeyboardEvent2(keyCode, keyAction, modifiers, 0);
+int LiSendKeyboardEvent2(short keyCode, char keyAction, char modifiers, char flags) {
+    return LiSendKeyboardEvent2Ctx(&gConnectionContext.inputContext, keyCode, keyAction, modifiers, flags);
 }
 
-int LiSendUtf8TextEvent(const char *text, unsigned int length) {
+int LiSendKeyboardEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short keyCode, char keyAction, char modifiers) {
+  return LiSendKeyboardEvent2Ctx(ctx, keyCode, keyAction, modifiers, 0);
+}
+
+int LiSendKeyboardEvent(short keyCode, char keyAction, char modifiers) {
+  return LiSendKeyboardEvent2Ctx(&gConnectionContext.inputContext, keyCode, keyAction, modifiers, 0);
+}
+
+int LiSendUtf8TextEventCtx(PML_INPUT_STREAM_CONTEXT ctx, const char *text, unsigned int length) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
-  holder = allocatePacketHolder(length);
+  holder = allocatePacketHolder(ctx, length);
   if (holder == NULL) {
     return -1;
   }
@@ -1072,17 +1131,21 @@ int LiSendUtf8TextEvent(const char *text, unsigned int length) {
   holder->packet.unicode.header.magic = LE32(UTF8_TEXT_EVENT_MAGIC);
   memcpy(holder->packet.unicode.text, text, length);
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
-static int sendControllerEventInternal(short controllerNumber,
+int LiSendUtf8TextEvent(const char *text, unsigned int length) {
+    return LiSendUtf8TextEventCtx(&gConnectionContext.inputContext, text, length);
+}
+
+static int sendControllerEventInternal(PML_INPUT_STREAM_CONTEXT ctx, short controllerNumber,
                                        short activeGamepadMask, int buttonFlags,
                                        unsigned char leftTrigger,
                                        unsigned char rightTrigger,
@@ -1091,7 +1154,7 @@ static int sendControllerEventInternal(short controllerNumber,
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -1127,7 +1190,7 @@ static int sendControllerEventInternal(short controllerNumber,
     controllerNumber %= MAX_GAMEPADS;
   }
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -1186,43 +1249,59 @@ static int sendControllerEventInternal(short controllerNumber,
     holder->packet.multiController.tailB = LE16(MC_TAIL_B);
   }
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
 // Send a controller event to the streaming machine
-int LiSendControllerEvent(int buttonFlags, unsigned char leftTrigger,
+int LiSendControllerEventCtx(PML_INPUT_STREAM_CONTEXT ctx, int buttonFlags, unsigned char leftTrigger,
                           unsigned char rightTrigger, short leftStickX,
                           short leftStickY, short rightStickX,
                           short rightStickY) {
-  return sendControllerEventInternal(0, 0x1, buttonFlags, leftTrigger,
+  return sendControllerEventInternal(ctx, 0, 0x1, buttonFlags, leftTrigger,
                                      rightTrigger, leftStickX, leftStickY,
                                      rightStickX, rightStickY);
 }
 
+int LiSendControllerEvent(int buttonFlags, unsigned char leftTrigger,
+                          unsigned char rightTrigger, short leftStickX,
+                          short leftStickY, short rightStickX,
+                          short rightStickY) {
+    return LiSendControllerEventCtx(&gConnectionContext.inputContext, buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
+}
+
 // Send a controller event to the streaming machine
-int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
+int LiSendMultiControllerEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short controllerNumber, short activeGamepadMask,
                                int buttonFlags, unsigned char leftTrigger,
                                unsigned char rightTrigger, short leftStickX,
                                short leftStickY, short rightStickX,
                                short rightStickY) {
   return sendControllerEventInternal(
+      ctx,
       controllerNumber, activeGamepadMask, buttonFlags, leftTrigger,
       rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
 }
 
+int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
+                               int buttonFlags, unsigned char leftTrigger,
+                               unsigned char rightTrigger, short leftStickX,
+                               short leftStickY, short rightStickX,
+                               short rightStickY) {
+    return LiSendMultiControllerEventCtx(&gConnectionContext.inputContext, controllerNumber, activeGamepadMask, buttonFlags, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
+}
+
 // Send a high resolution scroll event to the streaming machine
-int LiSendHighResScrollEvent(short scrollAmount) {
+int LiSendHighResScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmount) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -1236,20 +1315,20 @@ int LiSendHighResScrollEvent(short scrollAmount) {
   // converted into a full WHEEL_DELTA scroll, even if the actual delta is tiny.
   // Similarly, large scrolls are capped at +/- WHEEL_DELTA too so we'll need to
   // split those up too.
-  if (needsBatchedScroll) {
-    if ((batchedScrollDelta < 0 && scrollAmount > 0) ||
-        (batchedScrollDelta > 0 && scrollAmount < 0)) {
+  if (ctx->needsBatchedScroll) {
+    if ((ctx->batchedScrollDelta < 0 && scrollAmount > 0) ||
+        (ctx->batchedScrollDelta > 0 && scrollAmount < 0)) {
       // Reset the accumulated scroll delta when the direction changes
       // FIXME: Maybe reset accumulated delta based on time too?
-      batchedScrollDelta = 0;
+      ctx->batchedScrollDelta = 0;
     }
 
-    batchedScrollDelta += scrollAmount;
+    ctx->batchedScrollDelta += scrollAmount;
 
-    while (abs(batchedScrollDelta) >= LI_WHEEL_DELTA) {
-      scrollAmount = batchedScrollDelta > 0 ? LI_WHEEL_DELTA : -LI_WHEEL_DELTA;
+    while (abs(ctx->batchedScrollDelta) >= LI_WHEEL_DELTA) {
+      scrollAmount = ctx->batchedScrollDelta > 0 ? LI_WHEEL_DELTA : -LI_WHEEL_DELTA;
 
-      holder = allocatePacketHolder(0);
+      holder = allocatePacketHolder(ctx, 0);
       if (holder == NULL) {
         return -1;
       }
@@ -1268,20 +1347,20 @@ int LiSendHighResScrollEvent(short scrollAmount) {
       holder->packet.scroll.scrollAmt2 = holder->packet.scroll.scrollAmt1;
       holder->packet.scroll.zero3 = 0;
 
-      err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+      err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
       if (err != LBQ_SUCCESS) {
         LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
         Limelog("Input queue reached maximum size limit\n");
-        freePacketHolder(holder);
+        freePacketHolder(ctx, holder);
         return err;
       }
 
-      batchedScrollDelta -= scrollAmount;
+      ctx->batchedScrollDelta -= scrollAmount;
     }
 
     err = 0;
   } else {
-    holder = allocatePacketHolder(0);
+    holder = allocatePacketHolder(ctx, 0);
     if (holder == NULL) {
       return -1;
     }
@@ -1300,28 +1379,36 @@ int LiSendHighResScrollEvent(short scrollAmount) {
     holder->packet.scroll.scrollAmt2 = holder->packet.scroll.scrollAmt1;
     holder->packet.scroll.zero3 = 0;
 
-    err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+    err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
     if (err != LBQ_SUCCESS) {
       LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
       Limelog("Input queue reached maximum size limit\n");
-      freePacketHolder(holder);
+      freePacketHolder(ctx, holder);
     }
   }
 
   return err;
 }
 
+int LiSendHighResScrollEvent(short scrollAmount) {
+    return LiSendHighResScrollEventCtx(&gConnectionContext.inputContext, scrollAmount);
+}
+
 // Send a scroll event to the streaming machine
+int LiSendScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, signed char scrollClicks) {
+  return LiSendHighResScrollEventCtx(ctx, scrollClicks * LI_WHEEL_DELTA);
+}
+
 int LiSendScrollEvent(signed char scrollClicks) {
-  return LiSendHighResScrollEvent(scrollClicks * LI_WHEEL_DELTA);
+    return LiSendScrollEventCtx(&gConnectionContext.inputContext, scrollClicks);
 }
 
 // Send a high resolution horizontal scroll event
-int LiSendHighResHScrollEvent(short scrollAmount) {
+int LiSendHighResHScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmount) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -1334,7 +1421,7 @@ int LiSendHighResHScrollEvent(short scrollAmount) {
     return 0;
   }
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -1347,30 +1434,38 @@ int LiSendHighResHScrollEvent(short scrollAmount) {
   holder->packet.hscroll.header.magic = LE32(SS_HSCROLL_MAGIC);
   holder->packet.hscroll.scrollAmount = BE16(scrollAmount);
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
-int LiSendHScrollEvent(signed char scrollClicks) {
-  return LiSendHighResHScrollEvent(scrollClicks * LI_WHEEL_DELTA);
+int LiSendHighResHScrollEvent(short scrollAmount) {
+    return LiSendHighResHScrollEventCtx(&gConnectionContext.inputContext, scrollAmount);
 }
 
-int LiSendMicrophoneControl(uint8_t control, int sampleRate, int channelCount,
+int LiSendHScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, signed char scrollClicks) {
+  return LiSendHighResHScrollEventCtx(ctx, scrollClicks * LI_WHEEL_DELTA);
+}
+
+int LiSendHScrollEvent(signed char scrollClicks) {
+    return LiSendHScrollEventCtx(&gConnectionContext.inputContext, scrollClicks);
+}
+
+int LiSendMicrophoneControlCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t control, int sampleRate, int channelCount,
                             int bitrate) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -1389,23 +1484,28 @@ int LiSendMicrophoneControl(uint8_t control, int sampleRate, int channelCount,
   holder->packet.microphone.config.channelCount = LE32((uint32_t)channelCount);
   holder->packet.microphone.config.bitrate = LE32((uint32_t)bitrate);
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
-int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y,
+int LiSendMicrophoneControl(uint8_t control, int sampleRate, int channelCount,
+                            int bitrate) {
+    return LiSendMicrophoneControlCtx(&gConnectionContext.inputContext, control, sampleRate, channelCount, bitrate);
+}
+
+int LiSendTouchEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t eventType, uint32_t pointerId, float x, float y,
                      float pressureOrDistance, float contactAreaMajor,
                      float contactAreaMinor, uint16_t rotation) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -1414,7 +1514,7 @@ int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y,
     return LI_ERR_UNSUPPORTED;
   }
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -1439,24 +1539,30 @@ int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y,
   floatToNetfloat(contactAreaMajor, holder->packet.touch.contactAreaMajor);
   floatToNetfloat(contactAreaMinor, holder->packet.touch.contactAreaMinor);
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
-int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
+int LiSendTouchEvent(uint8_t eventType, uint32_t pointerId, float x, float y,
+                     float pressureOrDistance, float contactAreaMajor,
+                     float contactAreaMinor, uint16_t rotation) {
+    return LiSendTouchEventCtx(&gConnectionContext.inputContext, eventType, pointerId, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation);
+}
+
+int LiSendPenEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t eventType, uint8_t toolType, uint8_t penButtons,
                    float x, float y, float pressureOrDistance,
                    float contactAreaMajor, float contactAreaMinor,
                    uint16_t rotation, uint8_t tilt) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -1465,7 +1571,7 @@ int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
     return LI_ERR_UNSUPPORTED;
   }
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -1476,10 +1582,10 @@ int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
   // buttons changed), but don't allow state changing events like up/down/leave
   // events to be dropped.
   holder->enetPacketFlags = (TOUCH_EVENT_IS_BATCHABLE(eventType) &&
-                             !(penButtons ^ currentPenButtonState))
+                             !(penButtons ^ ctx->currentPenButtonState))
                                 ? 0
                                 : ENET_PACKET_FLAG_RELIABLE;
-  currentPenButtonState = penButtons;
+  ctx->currentPenButtonState = penButtons;
 
   holder->packet.pen.header.size =
       BE32(sizeof(SS_PEN_PACKET) - sizeof(uint32_t));
@@ -1497,24 +1603,31 @@ int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
   floatToNetfloat(contactAreaMajor, holder->packet.pen.contactAreaMajor);
   floatToNetfloat(contactAreaMinor, holder->packet.pen.contactAreaMinor);
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
-int LiSendControllerArrivalEvent(uint8_t controllerNumber,
+int LiSendPenEvent(uint8_t eventType, uint8_t toolType, uint8_t penButtons,
+                   float x, float y, float pressureOrDistance,
+                   float contactAreaMajor, float contactAreaMinor,
+                   uint16_t rotation, uint8_t tilt) {
+    return LiSendPenEventCtx(&gConnectionContext.inputContext, eventType, toolType, penButtons, x, y, pressureOrDistance, contactAreaMajor, contactAreaMinor, rotation, tilt);
+}
+
+int LiSendControllerArrivalEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber,
                                  uint16_t activeGamepadMask, uint8_t type,
                                  uint32_t supportedButtonFlags,
                                  uint16_t capabilities) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -1523,7 +1636,7 @@ int LiSendControllerArrivalEvent(uint8_t controllerNumber,
 
   // The arrival event is only supported by Sunshine
   if (IS_SUNSHINE()) {
-    holder = allocatePacketHolder(0);
+    holder = allocatePacketHolder(ctx, 0);
     if (holder == NULL) {
       return -1;
     }
@@ -1542,28 +1655,35 @@ int LiSendControllerArrivalEvent(uint8_t controllerNumber,
     holder->packet.controllerArrival.supportedButtonFlags =
         LE32(supportedButtonFlags);
 
-    err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+    err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
     if (err != LBQ_SUCCESS) {
       LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
       Limelog("Input queue reached maximum size limit\n");
-      freePacketHolder(holder);
+      freePacketHolder(ctx, holder);
       return err;
     }
   }
 
   // Send a MC event just in case the host software doesn't support arrival
   // events.
-  return LiSendMultiControllerEvent(controllerNumber, activeGamepadMask, 0, 0,
+  return LiSendMultiControllerEventCtx(ctx, controllerNumber, activeGamepadMask, 0, 0,
                                     0, 0, 0, 0, 0);
 }
 
-int LiSendControllerTouchEvent(uint8_t controllerNumber, uint8_t eventType,
+int LiSendControllerArrivalEvent(uint8_t controllerNumber,
+                                 uint16_t activeGamepadMask, uint8_t type,
+                                 uint32_t supportedButtonFlags,
+                                 uint16_t capabilities) {
+    return LiSendControllerArrivalEventCtx(&gConnectionContext.inputContext, controllerNumber, activeGamepadMask, type, supportedButtonFlags, capabilities);
+}
+
+int LiSendControllerTouchEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t eventType,
                                uint32_t pointerId, float x, float y,
                                float pressure) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -1575,7 +1695,7 @@ int LiSendControllerTouchEvent(uint8_t controllerNumber, uint8_t eventType,
   // Sunshine supports up to 16 controllers
   controllerNumber %= MAX_GAMEPADS;
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -1600,22 +1720,28 @@ int LiSendControllerTouchEvent(uint8_t controllerNumber, uint8_t eventType,
   floatToNetfloat(y, holder->packet.controllerTouch.y);
   floatToNetfloat(pressure, holder->packet.controllerTouch.pressure);
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
 
-int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType,
+int LiSendControllerTouchEvent(uint8_t controllerNumber, uint8_t eventType,
+                               uint32_t pointerId, float x, float y,
+                               float pressure) {
+    return LiSendControllerTouchEventCtx(&gConnectionContext.inputContext, controllerNumber, eventType, pointerId, x, y, pressure);
+}
+
+int LiSendControllerMotionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t motionType,
                                 float x, float y, float z) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -1633,17 +1759,17 @@ int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType,
   // Sunshine supports up to 16 controllers
   controllerNumber %= MAX_GAMEPADS;
 
-  PltLockMutex(&batchedInputMutex);
+  PltLockMutex(&ctx->batchedInputMutex);
 
-  currentGamepadSensorState[controllerNumber][motionType - 1].x = x;
-  currentGamepadSensorState[controllerNumber][motionType - 1].y = y;
-  currentGamepadSensorState[controllerNumber][motionType - 1].z = z;
+  ctx->currentGamepadSensorState[controllerNumber][motionType - 1].x = x;
+  ctx->currentGamepadSensorState[controllerNumber][motionType - 1].y = y;
+  ctx->currentGamepadSensorState[controllerNumber][motionType - 1].z = z;
 
   // Queue a packet holder if this is the only pending sensor event
-  if (!currentGamepadSensorState[controllerNumber][motionType - 1].dirty) {
-    holder = allocatePacketHolder(0);
+  if (!ctx->currentGamepadSensorState[controllerNumber][motionType - 1].dirty) {
+    holder = allocatePacketHolder(ctx, 0);
     if (holder == NULL) {
-      PltUnlockMutex(&batchedInputMutex);
+      PltUnlockMutex(&ctx->batchedInputMutex);
       return -1;
     }
 
@@ -1662,30 +1788,35 @@ int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType,
     // Remaining fields are set in the input thread based on the latest
     // currentGamepadSensorState values
 
-    err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+    err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
     if (err == LBQ_SUCCESS) {
-      currentGamepadSensorState[controllerNumber][motionType - 1].dirty = true;
+      ctx->currentGamepadSensorState[controllerNumber][motionType - 1].dirty = true;
     } else {
       LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
       Limelog("Input queue reached maximum size limit\n");
-      freePacketHolder(holder);
+      freePacketHolder(ctx, holder);
     }
   } else {
     // There's already a packet holder queued to send this event
     err = 0;
   }
 
-  PltUnlockMutex(&batchedInputMutex);
+  PltUnlockMutex(&ctx->batchedInputMutex);
 
   return err;
 }
 
-int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState,
+int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType,
+                                float x, float y, float z) {
+    return LiSendControllerMotionEventCtx(&gConnectionContext.inputContext, controllerNumber, motionType, x, y, z);
+}
+
+int LiSendControllerBatteryEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t batteryState,
                                  uint8_t batteryPercentage) {
   PPACKET_HOLDER holder;
   int err;
 
-  if (!initialized) {
+  if (!ctx->initialized) {
     return -2;
   }
 
@@ -1697,7 +1828,7 @@ int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState,
   // Sunshine supports up to 16 controllers
   controllerNumber %= MAX_GAMEPADS;
 
-  holder = allocatePacketHolder(0);
+  holder = allocatePacketHolder(ctx, 0);
   if (holder == NULL) {
     return -1;
   }
@@ -1716,12 +1847,18 @@ int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState,
   memset(holder->packet.controllerBattery.zero, 0,
          sizeof(holder->packet.controllerBattery.zero));
 
-  err = LbqOfferQueueItem(&packetQueue, holder, &holder->entry);
+  err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
-    freePacketHolder(holder);
+    freePacketHolder(ctx, holder);
   }
 
   return err;
 }
+
+int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState,
+                                 uint8_t batteryPercentage) {
+    return LiSendControllerBatteryEventCtx(&gConnectionContext.inputContext, controllerNumber, batteryState, batteryPercentage);
+}
+

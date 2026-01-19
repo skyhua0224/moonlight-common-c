@@ -1,43 +1,156 @@
 #include "Limelight-internal.h"
 
-static int stage = STAGE_NONE;
-static ConnListenerConnectionTerminated originalTerminationCallback;
-static bool alreadyTerminated;
-static PLT_THREAD terminationCallbackThread;
-static int terminationCallbackErrorCode;
+#ifdef RemoteAddrString
+#undef RemoteAddrString
+#endif
+#ifdef RemoteAddr
+#undef RemoteAddr
+#endif
+#ifdef LocalAddr
+#undef LocalAddr
+#endif
+#ifdef AddrLen
+#undef AddrLen
+#endif
+#ifdef ConnectionAppVersionQuad
+#undef ConnectionAppVersionQuad
+#endif
+#ifdef StreamConfig
+#undef StreamConfig
+#endif
+#ifdef ListenerCallbacks
+#undef ListenerCallbacks
+#endif
+#ifdef VideoCallbacks
+#undef VideoCallbacks
+#endif
+#ifdef AudioCallbacks
+#undef AudioCallbacks
+#endif
+#ifdef NegotiatedVideoFormat
+#undef NegotiatedVideoFormat
+#endif
+#ifdef ConnectionInterrupted
+#undef ConnectionInterrupted
+#endif
+#ifdef HighQualitySurroundSupported
+#undef HighQualitySurroundSupported
+#endif
+#ifdef HighQualitySurroundEnabled
+#undef HighQualitySurroundEnabled
+#endif
+#ifdef NormalQualityOpusConfig
+#undef NormalQualityOpusConfig
+#endif
+#ifdef HighQualityOpusConfig
+#undef HighQualityOpusConfig
+#endif
+#ifdef AudioPacketDuration
+#undef AudioPacketDuration
+#endif
+#ifdef AudioEncryptionEnabled
+#undef AudioEncryptionEnabled
+#endif
+#ifdef ReferenceFrameInvalidationSupported
+#undef ReferenceFrameInvalidationSupported
+#endif
+#ifdef RtspPortNumber
+#undef RtspPortNumber
+#endif
+#ifdef ControlPortNumber
+#undef ControlPortNumber
+#endif
+#ifdef AudioPortNumber
+#undef AudioPortNumber
+#endif
+#ifdef VideoPortNumber
+#undef VideoPortNumber
+#endif
+#ifdef MicPortNumber
+#undef MicPortNumber
+#endif
+#ifdef AudioPingPayload
+#undef AudioPingPayload
+#endif
+#ifdef VideoPingPayload
+#undef VideoPingPayload
+#endif
+#ifdef MicPingPayload
+#undef MicPingPayload
+#endif
+#ifdef ControlConnectData
+#undef ControlConnectData
+#endif
+#ifdef SunshineFeatureFlags
+#undef SunshineFeatureFlags
+#endif
+#ifdef EncryptionFeaturesSupported
+#undef EncryptionFeaturesSupported
+#endif
+#ifdef EncryptionFeaturesRequested
+#undef EncryptionFeaturesRequested
+#endif
+#ifdef EncryptionFeaturesEnabled
+#undef EncryptionFeaturesEnabled
+#endif
 
-// Common globals
-char* RemoteAddrString;
-struct sockaddr_storage RemoteAddr;
-struct sockaddr_storage LocalAddr;
-SOCKADDR_LEN AddrLen;
+// TLS for connection context
+#if defined(_MSC_VER)
+static __declspec(thread) PML_CONNECTION_CONTEXT tls_CurrentConnectionContext = NULL;
+#else
+static __thread PML_CONNECTION_CONTEXT tls_CurrentConnectionContext = NULL;
+#endif
+
+void LiSetThreadConnectionContext(PML_CONNECTION_CONTEXT ctx) {
+    tls_CurrentConnectionContext = ctx;
+}
+
+PML_CONNECTION_CONTEXT LiGetThreadConnectionContext(void) {
+    return tls_CurrentConnectionContext;
+}
+
+// Macros to redirect global access to context
+#define RemoteAddrString (ctx->RemoteAddrString)
+#define RemoteAddr (ctx->RemoteAddr)
+#define LocalAddr (ctx->LocalAddr)
+#define AddrLen (ctx->AddrLen)
+#define ConnectionAppVersionQuad (ctx->AppVersionQuad)
+#define StreamConfig (ctx->StreamConfig)
+#define ListenerCallbacks (ctx->ListenerCallbacks)
+#define VideoCallbacks (ctx->VideoCallbacks)
+#define AudioCallbacks (ctx->AudioCallbacks)
+#define NegotiatedVideoFormat (ctx->NegotiatedVideoFormat)
+#define ConnectionInterrupted (ctx->ConnectionInterrupted)
+#define HighQualitySurroundSupported (ctx->HighQualitySurroundSupported)
+#define HighQualitySurroundEnabled (ctx->HighQualitySurroundEnabled)
+#define NormalQualityOpusConfig (ctx->NormalQualityOpusConfig)
+#define HighQualityOpusConfig (ctx->HighQualityOpusConfig)
+#define AudioPacketDuration (ctx->AudioPacketDuration)
+#define AudioEncryptionEnabled (ctx->AudioEncryptionEnabled)
+#define ReferenceFrameInvalidationSupported (ctx->ReferenceFrameInvalidationSupported)
+#define RtspPortNumber (ctx->RtspPortNumber)
+#define ControlPortNumber (ctx->ControlPortNumber)
+#define AudioPortNumber (ctx->AudioPortNumber)
+#define VideoPortNumber (ctx->VideoPortNumber)
+#define MicPortNumber (ctx->MicPortNumber)
+#define AudioPingPayload (ctx->AudioPingPayload)
+#define VideoPingPayload (ctx->VideoPingPayload)
+#define MicPingPayload (ctx->MicPingPayload)
+#define ControlConnectData (ctx->ControlConnectData)
+#define SunshineFeatureFlags (ctx->SunshineFeatureFlags)
+#define EncryptionFeaturesSupported (ctx->EncryptionFeaturesSupported)
+#define EncryptionFeaturesRequested (ctx->EncryptionFeaturesRequested)
+#define EncryptionFeaturesEnabled (ctx->EncryptionFeaturesEnabled)
+
+#define connectionStage (ctx->stage)
+#define originalTerminationCallback (ctx->originalTerminationCallback)
+#define alreadyTerminated (ctx->alreadyTerminated)
+#define terminationCallbackThread (ctx->terminationCallbackThread)
+#define terminationCallbackErrorCode (ctx->terminationCallbackErrorCode)
+
+// Global instance for legacy API
+ML_CONNECTION_CONTEXT gConnectionContext;
 int AppVersionQuad[4];
-STREAM_CONFIGURATION StreamConfig;
-CONNECTION_LISTENER_CALLBACKS ListenerCallbacks;
-DECODER_RENDERER_CALLBACKS VideoCallbacks;
-AUDIO_RENDERER_CALLBACKS AudioCallbacks;
-int NegotiatedVideoFormat;
-volatile bool ConnectionInterrupted;
-bool HighQualitySurroundSupported;
-bool HighQualitySurroundEnabled;
-OPUS_MULTISTREAM_CONFIGURATION NormalQualityOpusConfig;
-OPUS_MULTISTREAM_CONFIGURATION HighQualityOpusConfig;
-int AudioPacketDuration;
-bool AudioEncryptionEnabled;
-bool ReferenceFrameInvalidationSupported;
-uint16_t RtspPortNumber;
-uint16_t ControlPortNumber;
-uint16_t AudioPortNumber;
-uint16_t VideoPortNumber;
-uint16_t MicPortNumber;
-SS_PING AudioPingPayload;
-SS_PING VideoPingPayload;
-SS_PING MicPingPayload;
-uint32_t ControlConnectData;
-uint32_t SunshineFeatureFlags;
-uint32_t EncryptionFeaturesSupported;
-uint32_t EncryptionFeaturesRequested;
-uint32_t EncryptionFeaturesEnabled;
 
 // Connection stages
 static const char* stageNames[STAGE_MAX] = {
@@ -60,106 +173,117 @@ const char* LiGetStageName(int stage) {
     return stageNames[stage];
 }
 
-// Interrupt a pending connection attempt. This interruption happens asynchronously
-// so it is not safe to start another connection before LiStartConnection() returns.
-void LiInterruptConnection(void) {
+// Interrupt a pending connection attempt (Context version)
+void LiInterruptConnectionCtx(PML_CONNECTION_CONTEXT ctx) {
     // Signal anyone waiting on the global interrupted flag
     ConnectionInterrupted = true;
 }
 
-// Stop the connection by undoing the step at the current stage and those before it
-void LiStopConnection(void) {
+void LiInterruptConnection(void) {
+    LiInterruptConnectionCtx(&gConnectionContext);
+}
+
+// Stop the connection by undoing the step at the current stage and those before it (Context version)
+void LiStopConnectionCtx(PML_CONNECTION_CONTEXT ctx) {
     // Disable termination callbacks now
     alreadyTerminated = true;
 
     // Set the interrupted flag
-    LiInterruptConnection();
+    LiInterruptConnectionCtx(ctx);
 
-    if (stage == STAGE_INPUT_STREAM_START) {
+    if (connectionStage == STAGE_INPUT_STREAM_START) {
         Limelog("Stopping input stream...");
-        stopInputStream();
-        stage--;
+        stopInputStreamCtx(&ctx->inputContext);
+        connectionStage--;
         Limelog("done\n");
     }
-    if (stage == STAGE_AUDIO_STREAM_START) {
+    if (connectionStage == STAGE_AUDIO_STREAM_START) {
         Limelog("Stopping audio stream...");
-        stopAudioStream();
-        stage--;
+        stopAudioStreamCtx(&ctx->audioContext);
+        connectionStage--;
         Limelog("done\n");
     }
-    if (stage == STAGE_VIDEO_STREAM_START) {
+    if (connectionStage == STAGE_VIDEO_STREAM_START) {
         Limelog("Stopping video stream...");
-        stopVideoStream();
-        stage--;
+        stopVideoStreamCtx(&ctx->videoContext);
+        connectionStage--;
         Limelog("done\n");
     }
-    if (stage == STAGE_CONTROL_STREAM_START) {
+    if (connectionStage == STAGE_CONTROL_STREAM_START) {
         Limelog("Stopping control stream...");
-        stopControlStream();
-        stage--;
+        stopControlStreamCtx(&ctx->controlContext);
+        connectionStage--;
         Limelog("done\n");
     }
-    if (stage == STAGE_INPUT_STREAM_INIT) {
+    if (connectionStage == STAGE_INPUT_STREAM_INIT) {
         Limelog("Cleaning up input stream...");
-        destroyInputStream();
-        stage--;
+        destroyInputStreamCtx(&ctx->inputContext);
+        connectionStage--;
         Limelog("done\n");
     }
-    if (stage == STAGE_VIDEO_STREAM_INIT) {
+    if (connectionStage == STAGE_VIDEO_STREAM_INIT) {
         Limelog("Cleaning up video stream...");
-        destroyVideoStream();
-        stage--;
+        destroyVideoStreamCtx(&ctx->videoContext);
+        connectionStage--;
         Limelog("done\n");
     }
-    if (stage == STAGE_CONTROL_STREAM_INIT) {
+    if (connectionStage == STAGE_CONTROL_STREAM_INIT) {
         Limelog("Cleaning up control stream...");
-        destroyControlStream();
-        stage--;
+        destroyControlStreamCtx(&ctx->controlContext);
+        connectionStage--;
         Limelog("done\n");
     }
-    if (stage == STAGE_RTSP_HANDSHAKE) {
-        // Nothing to do
-        stage--;
+    if (connectionStage == STAGE_RTSP_HANDSHAKE) {
+        Limelog("Cleaning up RTSP handshake...");
+        // No explicit RTSP handshake cleanup needed here
+        connectionStage--;
+        Limelog("done\n");
     }
-    if (stage == STAGE_AUDIO_STREAM_INIT) {
+    if (connectionStage == STAGE_AUDIO_STREAM_INIT) {
         Limelog("Cleaning up audio stream...");
-        destroyAudioStream();
-        stage--;
+        destroyAudioStreamCtx(&ctx->audioContext);
+        connectionStage--;
         Limelog("done\n");
     }
-    if (stage == STAGE_NAME_RESOLUTION) {
-        // Nothing to do
-        stage--;
+    if (connectionStage == STAGE_NAME_RESOLUTION) {
+        Limelog("Cleaning up host name resolution...");
+        if (RemoteAddrString != NULL) {
+            free(RemoteAddrString);
+            RemoteAddrString = NULL;
+        }
+        connectionStage--;
+        Limelog("done\n");
     }
-    if (stage == STAGE_PLATFORM_INIT) {
+    if (connectionStage == STAGE_PLATFORM_INIT) {
         Limelog("Cleaning up platform...");
         cleanupPlatform();
-        stage--;
+        connectionStage--;
         Limelog("done\n");
     }
-    LC_ASSERT(stage == STAGE_NONE);
-    
-    if (RemoteAddrString != NULL) {
-        free(RemoteAddrString);
-        RemoteAddrString = NULL;
-    }
+    LC_ASSERT(connectionStage == STAGE_NONE);
+}
+
+void LiStopConnection(void) {
+    LiStopConnectionCtx(&gConnectionContext);
 }
 
 static void terminationCallbackThreadFunc(void* context)
 {
-    // Invoke the client's termination callback
+    PML_CONNECTION_CONTEXT ctx = (PML_CONNECTION_CONTEXT)context;
+    LiSetThreadConnectionContext(ctx);
     originalTerminationCallback(terminationCallbackErrorCode);
 }
 
 // This shim callback runs the client's connectionTerminated() callback on a
-// separate thread. This is neccessary because other internal threads directly
-// invoke this callback. That can result in a deadlock if the client
-// calls LiStopConnection() in the callback when the cleanup code
-// attempts to join the thread that the termination callback (and LiStopConnection)
-// is running on.
+// separate thread.
 static void ClInternalConnectionTerminated(int errorCode)
 {
     int err;
+    PML_CONNECTION_CONTEXT ctx = LiGetThreadConnectionContext();
+
+    if (ctx == NULL) {
+        ctx = &gConnectionContext;
+    }
 
     // Avoid recursion and issuing multiple callbacks
     if (alreadyTerminated || ConnectionInterrupted) {
@@ -170,7 +294,7 @@ static void ClInternalConnectionTerminated(int errorCode)
     alreadyTerminated = true;
 
     // Invoke the termination callback on a separate thread
-    err = PltCreateThread("AsyncTerm", terminationCallbackThreadFunc, NULL, &terminationCallbackThread);
+    err = PltCreateThread("AsyncTerm", terminationCallbackThreadFunc, ctx, &terminationCallbackThread);
     if (err != 0) {
         // Nothing we can safely do here, so we'll just assert on debug builds
         Limelog("Failed to create termination thread: %d\n", err);
@@ -207,13 +331,16 @@ static bool parseRtspPortNumberFromUrl(const char* rtspSessionUrl, uint16_t* por
     return true;
 }
 
-// Starts the connection to the streaming machine
-int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION streamConfig, PCONNECTION_LISTENER_CALLBACKS clCallbacks,
+// Starts the connection to the streaming machine (Context version)
+int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION streamConfig, PCONNECTION_LISTENER_CALLBACKS clCallbacks,
     PDECODER_RENDERER_CALLBACKS drCallbacks, PAUDIO_RENDERER_CALLBACKS arCallbacks, void* renderContext, int drFlags,
     void* audioContext, int arFlags) {
     int err;
 
-    stage = STAGE_NONE;
+    // Set TLS for the current thread (usually main/GUI thread)
+    LiSetThreadConnectionContext(ctx);
+
+    connectionStage = STAGE_NONE;
 
     if (drCallbacks != NULL && (drCallbacks->capabilities & CAPABILITY_PULL_RENDERER) && drCallbacks->submitDecodeUnit) {
         Limelog("CAPABILITY_PULL_RENDERER cannot be set with a submitDecodeUnit callback\n");
@@ -238,11 +365,12 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
 
     // Extract the appversion from the supplied string
     if (extractVersionQuadFromString(serverInfo->serverInfoAppVersion,
-                                     AppVersionQuad) < 0) {
+                                     ConnectionAppVersionQuad) < 0) {
         Limelog("Invalid appversion string: %s\n", serverInfo->serverInfoAppVersion);
         err = -1;
         goto Cleanup;
     }
+    memcpy(AppVersionQuad, ConnectionAppVersionQuad, sizeof(AppVersionQuad));
 
     // Replace missing callbacks with placeholders
     fixupMissingCallbacks(&drCallbacks, &arCallbacks, &clCallbacks);
@@ -285,7 +413,7 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
 
     alreadyTerminated = false;
     ConnectionInterrupted = false;
-    
+
     // Validate the audio configuration
     if (MAGIC_BYTE_FROM_AUDIO_CONFIG(StreamConfig.audioConfiguration) != 0xCA ||
             CHANNEL_COUNT_FROM_AUDIO_CONFIGURATION(StreamConfig.audioConfiguration) > AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT) {
@@ -328,11 +456,11 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
     // 4K from RFI to avoid significant persistent artifacts after frame loss.
     if (StreamConfig.width == 3840 && StreamConfig.height == 2160 &&
             (VideoCallbacks.capabilities & CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC) &&
-            !IS_SUNSHINE()) {
+            !IS_SUNSHINE_CTX(ctx)) {
         Limelog("Disabling reference frame invalidation for 4K streaming with GFE\n");
         VideoCallbacks.capabilities &= ~CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC;
     }
-    
+
     Limelog("Initializing platform...");
     ListenerCallbacks.stageStarting(STAGE_PLATFORM_INIT);
     err = initializePlatform();
@@ -341,8 +469,8 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
         ListenerCallbacks.stageFailed(STAGE_PLATFORM_INIT, err);
         goto Cleanup;
     }
-    stage++;
-    LC_ASSERT(stage == STAGE_PLATFORM_INIT);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_PLATFORM_INIT);
     ListenerCallbacks.stageComplete(STAGE_PLATFORM_INIT);
     Limelog("done\n");
 
@@ -381,8 +509,8 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
         ListenerCallbacks.stageFailed(STAGE_NAME_RESOLUTION, err);
         goto Cleanup;
     }
-    stage++;
-    LC_ASSERT(stage == STAGE_NAME_RESOLUTION);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_NAME_RESOLUTION);
     ListenerCallbacks.stageComplete(STAGE_NAME_RESOLUTION);
     Limelog("done\n");
 
@@ -417,115 +545,115 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
 
     Limelog("Initializing audio stream...");
     ListenerCallbacks.stageStarting(STAGE_AUDIO_STREAM_INIT);
-    err = initializeAudioStream();
+    err = initializeAudioStreamCtx(&ctx->audioContext, ctx);
     if (err != 0) {
         Limelog("failed: %d\n", err);
         ListenerCallbacks.stageFailed(STAGE_AUDIO_STREAM_INIT, err);
         goto Cleanup;
     }
-    stage++;
-    LC_ASSERT(stage == STAGE_AUDIO_STREAM_INIT);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_AUDIO_STREAM_INIT);
     ListenerCallbacks.stageComplete(STAGE_AUDIO_STREAM_INIT);
     Limelog("done\n");
 
     Limelog("Starting RTSP handshake...");
     ListenerCallbacks.stageStarting(STAGE_RTSP_HANDSHAKE);
-    err = performRtspHandshake(serverInfo);
+    err = performRtspHandshakeCtx(ctx, serverInfo);
     if (err != 0) {
         Limelog("failed: %d\n", err);
         ListenerCallbacks.stageFailed(STAGE_RTSP_HANDSHAKE, err);
         goto Cleanup;
     }
-    stage++;
-    LC_ASSERT(stage == STAGE_RTSP_HANDSHAKE);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_RTSP_HANDSHAKE);
     ListenerCallbacks.stageComplete(STAGE_RTSP_HANDSHAKE);
     Limelog("done\n");
 
     Limelog("Initializing control stream...");
     ListenerCallbacks.stageStarting(STAGE_CONTROL_STREAM_INIT);
-    err = initializeControlStream();
+    err = initializeControlStreamCtx(&ctx->controlContext, ctx);
     if (err != 0) {
         Limelog("failed: %d\n", err);
         ListenerCallbacks.stageFailed(STAGE_CONTROL_STREAM_INIT, err);
         goto Cleanup;
     }
-    stage++;
-    LC_ASSERT(stage == STAGE_CONTROL_STREAM_INIT);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_CONTROL_STREAM_INIT);
     ListenerCallbacks.stageComplete(STAGE_CONTROL_STREAM_INIT);
     Limelog("done\n");
 
     Limelog("Initializing video stream...");
     ListenerCallbacks.stageStarting(STAGE_VIDEO_STREAM_INIT);
-    initializeVideoStream();
-    stage++;
-    LC_ASSERT(stage == STAGE_VIDEO_STREAM_INIT);
+    initializeVideoStreamCtx(&ctx->videoContext, ctx);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_VIDEO_STREAM_INIT);
     ListenerCallbacks.stageComplete(STAGE_VIDEO_STREAM_INIT);
     Limelog("done\n");
 
     Limelog("Initializing input stream...");
     ListenerCallbacks.stageStarting(STAGE_INPUT_STREAM_INIT);
-    initializeInputStream();
-    stage++;
-    LC_ASSERT(stage == STAGE_INPUT_STREAM_INIT);
+    initializeInputStreamCtx(&ctx->inputContext, ctx);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_INPUT_STREAM_INIT);
     ListenerCallbacks.stageComplete(STAGE_INPUT_STREAM_INIT);
     Limelog("done\n");
 
     Limelog("Starting control stream...");
     ListenerCallbacks.stageStarting(STAGE_CONTROL_STREAM_START);
-    err = startControlStream();
+    err = startControlStreamCtx(&ctx->controlContext);
     if (err != 0) {
         Limelog("failed: %d\n", err);
         ListenerCallbacks.stageFailed(STAGE_CONTROL_STREAM_START, err);
         goto Cleanup;
     }
-    stage++;
-    LC_ASSERT(stage == STAGE_CONTROL_STREAM_START);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_CONTROL_STREAM_START);
     ListenerCallbacks.stageComplete(STAGE_CONTROL_STREAM_START);
     Limelog("done\n");
 
     Limelog("Starting video stream...");
     ListenerCallbacks.stageStarting(STAGE_VIDEO_STREAM_START);
-    err = startVideoStream(renderContext, drFlags);
+    err = startVideoStreamCtx(&ctx->videoContext, renderContext, drFlags);
     if (err != 0) {
         Limelog("Video stream start failed: %d\n", err);
         ListenerCallbacks.stageFailed(STAGE_VIDEO_STREAM_START, err);
         goto Cleanup;
     }
-    stage++;
-    LC_ASSERT(stage == STAGE_VIDEO_STREAM_START);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_VIDEO_STREAM_START);
     ListenerCallbacks.stageComplete(STAGE_VIDEO_STREAM_START);
     Limelog("done\n");
 
     Limelog("Starting audio stream...");
     ListenerCallbacks.stageStarting(STAGE_AUDIO_STREAM_START);
-    err = startAudioStream(audioContext, arFlags);
+    err = startAudioStreamCtx(&ctx->audioContext, audioContext, arFlags);
     if (err != 0) {
         Limelog("Audio stream start failed: %d\n", err);
         ListenerCallbacks.stageFailed(STAGE_AUDIO_STREAM_START, err);
         goto Cleanup;
     }
-    stage++;
-    LC_ASSERT(stage == STAGE_AUDIO_STREAM_START);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_AUDIO_STREAM_START);
     ListenerCallbacks.stageComplete(STAGE_AUDIO_STREAM_START);
     Limelog("done\n");
 
     Limelog("Starting input stream...");
     ListenerCallbacks.stageStarting(STAGE_INPUT_STREAM_START);
-    err = startInputStream();
+    err = startInputStreamCtx(&ctx->inputContext);
     if (err != 0) {
         Limelog("Input stream start failed: %d\n", err);
         ListenerCallbacks.stageFailed(STAGE_INPUT_STREAM_START, err);
         goto Cleanup;
     }
-    stage++;
-    LC_ASSERT(stage == STAGE_INPUT_STREAM_START);
+    connectionStage++;
+    LC_ASSERT(connectionStage == STAGE_INPUT_STREAM_START);
     ListenerCallbacks.stageComplete(STAGE_INPUT_STREAM_START);
     Limelog("done\n");
-    
+
     // Wiggle the mouse a bit to wake the display up
-    LiSendMouseMoveEvent(1, 1);
+    LiSendMouseMoveEventCtx(&ctx->inputContext, 1, 1);
     PltSleepMs(10);
-    LiSendMouseMoveEvent(-1, -1);
+    LiSendMouseMoveEventCtx(&ctx->inputContext, -1, -1);
     PltSleepMs(10);
 
     ListenerCallbacks.connectionStarted();
@@ -533,9 +661,15 @@ int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION stre
 Cleanup:
     if (err != 0) {
         // Undo any work we've done here before failing
-        LiStopConnection();
+        LiStopConnectionCtx(ctx);
     }
     return err;
+}
+
+int LiStartConnection(PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION streamConfig, PCONNECTION_LISTENER_CALLBACKS clCallbacks,
+    PDECODER_RENDERER_CALLBACKS drCallbacks, PAUDIO_RENDERER_CALLBACKS arCallbacks, void* renderContext, int drFlags,
+    void* audioContext, int arFlags) {
+    return LiStartConnectionCtx(&gConnectionContext, serverInfo, streamConfig, clCallbacks, drCallbacks, arCallbacks, renderContext, drFlags, audioContext, arFlags);
 }
 
 const char* LiGetLaunchUrlQueryParameters(void) {

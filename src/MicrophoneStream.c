@@ -1,8 +1,24 @@
 #include "Limelight-internal.h"
 #include "PlatformSockets.h"
 
-static SOCKET micSocket = INVALID_SOCKET;
-static PPLT_CRYPTO_CONTEXT micEncryptionCtx;
+// Macros to redirect global access to context
+#ifdef RemoteAddr
+#undef RemoteAddr
+#endif
+#ifdef LocalAddr
+#undef LocalAddr
+#endif
+#ifdef AddrLen
+#undef AddrLen
+#endif
+#ifdef MicPortNumber
+#undef MicPortNumber
+#endif
+
+#define RemoteAddr (ctx->connectionContext->RemoteAddr)
+#define LocalAddr (ctx->connectionContext->LocalAddr)
+#define AddrLen (ctx->connectionContext->AddrLen)
+#define MicPortNumber (ctx->connectionContext->MicPortNumber)
 
 typedef struct _MICROPHONE_PACKET_HEADER {
   uint8_t flags;
@@ -15,57 +31,72 @@ typedef struct _MICROPHONE_PACKET_HEADER {
 #define MIC_PACKET_TYPE_OPUS 0x61 // 'a'
 
 // 初始化麦克风流
-int initializeMicrophoneStream(void) {
+int initializeMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
+  ctx->connectionContext = connectionContext;
+
   // 如果已经初始化，直接返回成功
-  if (micSocket != INVALID_SOCKET) {
+  if (ctx->micSocket != INVALID_SOCKET) {
     return 0;
   }
 
-  micEncryptionCtx = PltCreateCryptoContext();
-  if (micEncryptionCtx == NULL) {
+  ctx->micEncryptionCtx = PltCreateCryptoContext();
+  if (ctx->micEncryptionCtx == NULL) {
     return -1;
   }
 
   // 创建UDP socket
-  micSocket = bindUdpSocket(RemoteAddr.ss_family, &LocalAddr, AddrLen, 0,
+  ctx->micSocket = bindUdpSocket(RemoteAddr.ss_family, &LocalAddr, AddrLen, 0,
                             SOCK_QOS_TYPE_AUDIO);
-  if (micSocket == INVALID_SOCKET) {
-    PltDestroyCryptoContext(micEncryptionCtx);
+  if (ctx->micSocket == INVALID_SOCKET) {
+    PltDestroyCryptoContext(ctx->micEncryptionCtx);
+    ctx->micEncryptionCtx = NULL;
     return LastSocketFail();
   }
 
   return 0;
 }
 
+int initializeMicrophoneStream(void) {
+    return initializeMicrophoneStreamCtx(&gConnectionContext.micContext, &gConnectionContext);
+}
+
 // 关闭麦克风流
-void destroyMicrophoneStream(void) {
-  if (micSocket != INVALID_SOCKET) {
-    closeSocket(micSocket);
-    micSocket = INVALID_SOCKET;
+void destroyMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx) {
+  if (ctx->micSocket != INVALID_SOCKET) {
+    closeSocket(ctx->micSocket);
+    ctx->micSocket = INVALID_SOCKET;
   }
 
-  if (micEncryptionCtx != NULL) {
-    PltDestroyCryptoContext(micEncryptionCtx);
-    micEncryptionCtx = NULL;
+  if (ctx->micEncryptionCtx != NULL) {
+    PltDestroyCryptoContext(ctx->micEncryptionCtx);
+    ctx->micEncryptionCtx = NULL;
   }
 }
 
+void destroyMicrophoneStream(void) {
+    destroyMicrophoneStreamCtx(&gConnectionContext.micContext);
+}
+
 // 发送麦克风数据
-int sendMicrophoneData(const char *data, int length) {
+int sendMicrophoneDataCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, const char* data, int length) {
   LC_SOCKADDR saddr;
   ssize_t err;
 
-  if (micSocket == INVALID_SOCKET) {
+  if (ctx->micSocket == INVALID_SOCKET) {
     return -1;
   }
 
   memcpy(&saddr, &RemoteAddr, sizeof(saddr));
   SET_PORT(&saddr, MicPortNumber);
 
-  err = sendto(micSocket, data, length, 0, (struct sockaddr *)&saddr, AddrLen);
+  err = sendto(ctx->micSocket, data, length, 0, (struct sockaddr *)&saddr, AddrLen);
   if (err < 0) {
     return (int)LastSocketError();
   }
 
   return (int)err;
+}
+
+int sendMicrophoneData(const char* data, int length) {
+    return sendMicrophoneDataCtx(&gConnectionContext.micContext, data, length);
 }

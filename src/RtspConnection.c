@@ -5,23 +5,157 @@
 #define RTSP_RECEIVE_TIMEOUT_SEC 15
 #define RTSP_RETRY_DELAY_MS 500
 
-static int currentSeqNumber;
-static char rtspTargetUrl[256];
-static char *sessionIdString;
-static bool hasSessionId;
-static int rtspClientVersion;
-static char urlAddr[URLSAFESTRING_LEN];
-static bool useEnet;
-static char *controlStreamId;
-static bool encryptedRtspEnabled;
+typedef struct _RTSP_HANDSHAKE_CONTEXT {
+    int currentSeqNumber;
+    char rtspTargetUrl[256];
+    char *sessionIdString;
+    bool hasSessionId;
+    int rtspClientVersion;
+    char urlAddr[URLSAFESTRING_LEN];
+    bool useEnet;
+    char *controlStreamId;
+    bool encryptedRtspEnabled;
 
-static PPLT_CRYPTO_CONTEXT encryptionCtx;
-static PPLT_CRYPTO_CONTEXT decryptionCtx;
-static uint32_t encryptionSequenceNumber;
+    PPLT_CRYPTO_CONTEXT encryptionCtx;
+    PPLT_CRYPTO_CONTEXT decryptionCtx;
+    uint32_t encryptionSequenceNumber;
 
-static SOCKET sock = INVALID_SOCKET;
-static ENetHost *client;
-static ENetPeer *peer;
+    SOCKET sock;
+    ENetHost *client;
+    ENetPeer *peer;
+} RTSP_HANDSHAKE_CONTEXT, *PRTSP_HANDSHAKE_CONTEXT;
+
+// Macros to redirect state access to the handshake context
+#define currentSeqNumber (rtsp->currentSeqNumber)
+#define rtspTargetUrl (rtsp->rtspTargetUrl)
+#define sessionIdString (rtsp->sessionIdString)
+#define hasSessionId (rtsp->hasSessionId)
+#define rtspClientVersion (rtsp->rtspClientVersion)
+#define urlAddr (rtsp->urlAddr)
+#define useEnet (rtsp->useEnet)
+#define controlStreamId (rtsp->controlStreamId)
+#define encryptedRtspEnabled (rtsp->encryptedRtspEnabled)
+#define encryptionCtx (rtsp->encryptionCtx)
+#define decryptionCtx (rtsp->decryptionCtx)
+#define encryptionSequenceNumber (rtsp->encryptionSequenceNumber)
+#define sock (rtsp->sock)
+#define client (rtsp->client)
+#define peer (rtsp->peer)
+
+// Macros to redirect global access to connection context
+#ifdef ConnectionAppVersionQuad
+#undef ConnectionAppVersionQuad
+#endif
+#ifdef StreamConfig
+#undef StreamConfig
+#endif
+#ifdef ListenerCallbacks
+#undef ListenerCallbacks
+#endif
+#ifdef AudioCallbacks
+#undef AudioCallbacks
+#endif
+#ifdef VideoCallbacks
+#undef VideoCallbacks
+#endif
+#ifdef RtspPortNumber
+#undef RtspPortNumber
+#endif
+#ifdef RemoteAddr
+#undef RemoteAddr
+#endif
+#ifdef AddrLen
+#undef AddrLen
+#endif
+#ifdef LocalAddr
+#undef LocalAddr
+#endif
+#ifdef NegotiatedVideoFormat
+#undef NegotiatedVideoFormat
+#endif
+#ifdef ConnectionInterrupted
+#undef ConnectionInterrupted
+#endif
+#ifdef AudioEncryptionEnabled
+#undef AudioEncryptionEnabled
+#endif
+#ifdef MicPortNumber
+#undef MicPortNumber
+#endif
+#ifdef ControlPortNumber
+#undef ControlPortNumber
+#endif
+#ifdef VideoPortNumber
+#undef VideoPortNumber
+#endif
+#ifdef AudioPortNumber
+#undef AudioPortNumber
+#endif
+#ifdef AudioPingPayload
+#undef AudioPingPayload
+#endif
+#ifdef VideoPingPayload
+#undef VideoPingPayload
+#endif
+#ifdef MicPingPayload
+#undef MicPingPayload
+#endif
+#ifdef ControlConnectData
+#undef ControlConnectData
+#endif
+#ifdef ReferenceFrameInvalidationSupported
+#undef ReferenceFrameInvalidationSupported
+#endif
+#ifdef SunshineFeatureFlags
+#undef SunshineFeatureFlags
+#endif
+#ifdef EncryptionFeaturesSupported
+#undef EncryptionFeaturesSupported
+#endif
+#ifdef EncryptionFeaturesRequested
+#undef EncryptionFeaturesRequested
+#endif
+#ifdef EncryptionFeaturesEnabled
+#undef EncryptionFeaturesEnabled
+#endif
+#ifdef HighQualitySurroundSupported
+#undef HighQualitySurroundSupported
+#endif
+#ifdef NormalQualityOpusConfig
+#undef NormalQualityOpusConfig
+#endif
+#ifdef HighQualityOpusConfig
+#undef HighQualityOpusConfig
+#endif
+
+#define ConnectionAppVersionQuad (ctx->AppVersionQuad)
+#define StreamConfig (ctx->StreamConfig)
+#define ListenerCallbacks (ctx->ListenerCallbacks)
+#define AudioCallbacks (ctx->AudioCallbacks)
+#define VideoCallbacks (ctx->VideoCallbacks)
+#define RtspPortNumber (ctx->RtspPortNumber)
+#define RemoteAddr (ctx->RemoteAddr)
+#define AddrLen (ctx->AddrLen)
+#define LocalAddr (ctx->LocalAddr)
+#define NegotiatedVideoFormat (ctx->NegotiatedVideoFormat)
+#define ConnectionInterrupted (ctx->ConnectionInterrupted)
+#define AudioEncryptionEnabled (ctx->AudioEncryptionEnabled)
+#define MicPortNumber (ctx->MicPortNumber)
+#define ControlPortNumber (ctx->ControlPortNumber)
+#define VideoPortNumber (ctx->VideoPortNumber)
+#define AudioPortNumber (ctx->AudioPortNumber)
+#define AudioPingPayload (ctx->AudioPingPayload)
+#define VideoPingPayload (ctx->VideoPingPayload)
+#define MicPingPayload (ctx->MicPingPayload)
+#define ControlConnectData (ctx->ControlConnectData)
+#define ReferenceFrameInvalidationSupported (ctx->ReferenceFrameInvalidationSupported)
+#define SunshineFeatureFlags (ctx->SunshineFeatureFlags)
+#define EncryptionFeaturesSupported (ctx->EncryptionFeaturesSupported)
+#define EncryptionFeaturesRequested (ctx->EncryptionFeaturesRequested)
+#define EncryptionFeaturesEnabled (ctx->EncryptionFeaturesEnabled)
+#define HighQualitySurroundSupported (ctx->HighQualitySurroundSupported)
+#define NormalQualityOpusConfig (ctx->NormalQualityOpusConfig)
+#define HighQualityOpusConfig (ctx->HighQualityOpusConfig)
 
 #define CHAR_TO_INT(x) ((x) - '0')
 #define CHAR_IS_DIGIT(x) ((x) >= '0' && (x) <= '9')
@@ -66,7 +200,7 @@ static bool addOption(PRTSP_MESSAGE msg, char *option, char *content) {
 }
 
 // Create an RTSP Request
-static bool initializeRtspRequest(PRTSP_MESSAGE msg, char *command,
+static bool initializeRtspRequest(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE msg, char *command,
                                   char *target) {
   char sequenceNumberStr[16];
   char clientVersionStr[16];
@@ -96,7 +230,7 @@ typedef struct _ENC_RTSP_HEADER {
   uint8_t tag[16];
 } ENC_RTSP_HEADER, *PENC_RTSP_HEADER;
 
-static char *sealRtspMessage(PRTSP_MESSAGE request, int *messageLen) {
+static char *sealRtspMessage(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE request, int *messageLen) {
   char *serializedMessage;
   PENC_RTSP_HEADER encryptedMessage;
   int plaintextLen;
@@ -152,7 +286,7 @@ static char *sealRtspMessage(PRTSP_MESSAGE request, int *messageLen) {
   return (char *)encryptedMessage;
 }
 
-static bool unsealRtspMessage(char *rawMessage, int rawMessageLen,
+static bool unsealRtspMessage(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, char *rawMessage, int rawMessageLen,
                               PRTSP_MESSAGE response) {
   char *decryptedMessage;
   int decryptedMessageLen;
@@ -243,7 +377,7 @@ static bool unsealRtspMessage(char *rawMessage, int rawMessageLen,
 }
 
 // Send RTSP message and get response over ENet
-static bool transactRtspMessageEnet(PRTSP_MESSAGE request,
+static bool transactRtspMessageEnet(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE request,
                                     PRTSP_MESSAGE response,
                                     bool expectingPayload, int *error) {
   ENetEvent event;
@@ -379,7 +513,7 @@ Exit:
 }
 
 // Send RTSP message and get response over TCP
-static bool transactRtspMessageTcp(PRTSP_MESSAGE request,
+static bool transactRtspMessageTcp(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE request,
                                    PRTSP_MESSAGE response, int *error) {
   SOCK_RET err;
   bool ret;
@@ -422,7 +556,7 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request,
     return ret;
   }
 
-  serializedMessage = sealRtspMessage(request, &messageLen);
+  serializedMessage = sealRtspMessage(ctx, rtsp, request, &messageLen);
   if (serializedMessage == NULL) {
     closeSocket(sock);
     sock = INVALID_SOCKET;
@@ -482,7 +616,7 @@ static bool transactRtspMessageTcp(PRTSP_MESSAGE request,
   }
 
   // Decrypt (if necessary) and deserialize the RTSP response
-  ret = unsealRtspMessage(responseBuffer, offset, response);
+  ret = unsealRtspMessage(ctx, rtsp, responseBuffer, offset, response);
 
   // Fetch the local address for this socket if it's not populated yet
   if (LocalAddr.ss_family == 0) {
@@ -509,7 +643,7 @@ Exit:
   return ret;
 }
 
-static bool transactRtspMessage(PRTSP_MESSAGE request, PRTSP_MESSAGE response,
+static bool transactRtspMessage(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE request, PRTSP_MESSAGE response,
                                 bool expectingPayload, int *error) {
   if (ConnectionInterrupted) {
     *error = -1;
@@ -517,22 +651,22 @@ static bool transactRtspMessage(PRTSP_MESSAGE request, PRTSP_MESSAGE response,
   }
 
   if (useEnet) {
-    return transactRtspMessageEnet(request, response, expectingPayload, error);
+    return transactRtspMessageEnet(ctx, rtsp, request, response, expectingPayload, error);
   } else {
-    return transactRtspMessageTcp(request, response, error);
+    return transactRtspMessageTcp(ctx, rtsp, request, response, error);
   }
 }
 
 // Send RTSP OPTIONS request
-static bool requestOptions(PRTSP_MESSAGE response, int *error) {
+static bool requestOptions(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE response, int *error) {
   RTSP_MESSAGE request;
   bool ret;
 
   *error = -1;
 
-  ret = initializeRtspRequest(&request, "OPTIONS", rtspTargetUrl);
+  ret = initializeRtspRequest(ctx, rtsp, &request, "OPTIONS", rtspTargetUrl);
   if (ret) {
-    ret = transactRtspMessage(&request, response, false, error);
+    ret = transactRtspMessage(ctx, rtsp, &request, response, false, error);
     freeMessage(&request);
   }
 
@@ -540,18 +674,18 @@ static bool requestOptions(PRTSP_MESSAGE response, int *error) {
 }
 
 // Send RTSP DESCRIBE request
-static bool requestDescribe(PRTSP_MESSAGE response, int *error) {
+static bool requestDescribe(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE response, int *error) {
   RTSP_MESSAGE request;
   bool ret;
 
   *error = -1;
 
-  ret = initializeRtspRequest(&request, "DESCRIBE", rtspTargetUrl);
+  ret = initializeRtspRequest(ctx, rtsp, &request, "DESCRIBE", rtspTargetUrl);
   if (ret) {
     if (addOption(&request, "Accept", "application/sdp") &&
         addOption(&request, "If-Modified-Since",
                   "Thu, 01 Jan 1970 00:00:00 GMT")) {
-      ret = transactRtspMessage(&request, response, true, error);
+      ret = transactRtspMessage(ctx, rtsp, &request, response, true, error);
     } else {
       ret = false;
     }
@@ -562,14 +696,14 @@ static bool requestDescribe(PRTSP_MESSAGE response, int *error) {
 }
 
 // Send RTSP SETUP request
-static bool setupStream(PRTSP_MESSAGE response, char *target, int *error) {
+static bool setupStream(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE response, char *target, int *error) {
   RTSP_MESSAGE request;
   bool ret;
   char *transportValue;
 
   *error = -1;
 
-  ret = initializeRtspRequest(&request, "SETUP", target);
+  ret = initializeRtspRequest(ctx, rtsp, &request, "SETUP", target);
   if (ret) {
     if (hasSessionId) {
       if (!addOption(&request, "Session", sessionIdString)) {
@@ -578,7 +712,7 @@ static bool setupStream(PRTSP_MESSAGE response, char *target, int *error) {
       }
     }
 
-    if (AppVersionQuad[0] >= 6) {
+    if (ConnectionAppVersionQuad[0] >= 6) {
       // It looks like GFE doesn't care what we say our port is but
       // we need to give it some port to successfully complete the
       // handshake process.
@@ -590,7 +724,7 @@ static bool setupStream(PRTSP_MESSAGE response, char *target, int *error) {
     if (addOption(&request, "Transport", transportValue) &&
         addOption(&request, "If-Modified-Since",
                   "Thu, 01 Jan 1970 00:00:00 GMT")) {
-      ret = transactRtspMessage(&request, response, false, error);
+      ret = transactRtspMessage(ctx, rtsp, &request, response, false, error);
     } else {
       ret = false;
     }
@@ -603,16 +737,16 @@ static bool setupStream(PRTSP_MESSAGE response, char *target, int *error) {
 }
 
 // Send RTSP PLAY request
-static bool playStream(PRTSP_MESSAGE response, char *target, int *error) {
+static bool playStream(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE response, char *target, int *error) {
   RTSP_MESSAGE request;
   bool ret;
 
   *error = -1;
 
-  ret = initializeRtspRequest(&request, "PLAY", target);
+  ret = initializeRtspRequest(ctx, rtsp, &request, "PLAY", target);
   if (ret != 0) {
     if (addOption(&request, "Session", sessionIdString)) {
-      ret = transactRtspMessage(&request, response, false, error);
+      ret = transactRtspMessage(ctx, rtsp, &request, response, false, error);
     } else {
       ret = false;
     }
@@ -623,7 +757,7 @@ static bool playStream(PRTSP_MESSAGE response, char *target, int *error) {
 }
 
 // Send RTSP ANNOUNCE message
-static bool sendVideoAnnounce(PRTSP_MESSAGE response, int *error) {
+static bool sendVideoAnnounce(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE response, int *error) {
   RTSP_MESSAGE request;
   bool ret;
   int payloadLength;
@@ -632,8 +766,8 @@ static bool sendVideoAnnounce(PRTSP_MESSAGE response, int *error) {
   *error = -1;
 
   ret = initializeRtspRequest(
-      &request, "ANNOUNCE",
-      APP_VERSION_AT_LEAST(7, 1, 431) ? controlStreamId : "streamid=video");
+      ctx, rtsp, &request, "ANNOUNCE",
+      APP_VERSION_AT_LEAST_CTX(ctx, 7, 1, 431) ? controlStreamId : "streamid=video");
   if (ret) {
     ret = false;
 
@@ -643,7 +777,7 @@ static bool sendVideoAnnounce(PRTSP_MESSAGE response, int *error) {
     }
 
     request.payload =
-        getSdpPayloadForStreamConfig(rtspClientVersion, &payloadLength);
+        getSdpPayloadForStreamConfigCtx(ctx, rtspClientVersion, &payloadLength);
     if (request.payload == NULL) {
       goto FreeMessage;
     }
@@ -655,7 +789,7 @@ static bool sendVideoAnnounce(PRTSP_MESSAGE response, int *error) {
       goto FreeMessage;
     }
 
-    ret = transactRtspMessage(&request, response, false, error);
+    ret = transactRtspMessage(ctx, rtsp, &request, response, false, error);
 
   FreeMessage:
     freeMessage(&request);
@@ -665,7 +799,7 @@ static bool sendVideoAnnounce(PRTSP_MESSAGE response, int *error) {
 }
 
 static int
-parseOpusConfigFromParamString(char *paramStr, int channelCount,
+parseOpusConfigFromParamString(PML_CONNECTION_CONTEXT ctx, char *paramStr, int channelCount,
                                POPUS_MULTISTREAM_CONFIGURATION opusConfig) {
   int i;
 
@@ -707,7 +841,7 @@ parseOpusConfigFromParamString(char *paramStr, int channelCount,
 
 // Parse the server port from the Transport header
 // Example: unicast;server_port=48000-48001;source=192.168.35.177
-static bool parseServerPortFromTransport(PRTSP_MESSAGE response,
+static bool parseServerPortFromTransport(PML_CONNECTION_CONTEXT ctx, PRTSP_MESSAGE response,
                                          uint16_t *port) {
   char *transport;
   char *portStart;
@@ -737,7 +871,7 @@ static bool parseServerPortFromTransport(PRTSP_MESSAGE response,
 }
 
 // Parses the Opus configuration from an RTSP DESCRIBE response
-static int parseOpusConfigurations(PRTSP_MESSAGE response) {
+static int parseOpusConfigurations(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE response) {
   HighQualitySurroundSupported = false;
   memset(&NormalQualityOpusConfig, 0, sizeof(NormalQualityOpusConfig));
   memset(&HighQualityOpusConfig, 0, sizeof(HighQualityOpusConfig));
@@ -771,7 +905,7 @@ static int parseOpusConfigurations(PRTSP_MESSAGE response) {
       paramStart += strlen(paramsPrefix);
 
       // Parse the normal quality Opus config
-      err = parseOpusConfigFromParamString(paramStart, channelCount,
+      err = parseOpusConfigFromParamString(ctx, paramStart, channelCount,
                                            &NormalQualityOpusConfig);
       if (err != 0) {
         LC_ASSERT(err == 0);
@@ -802,7 +936,7 @@ static int parseOpusConfigurations(PRTSP_MESSAGE response) {
         paramStart += strlen(paramsPrefix);
 
         // Parse the high quality Opus config
-        err = parseOpusConfigFromParamString(paramStart, channelCount,
+        err = parseOpusConfigFromParamString(ctx, paramStart, channelCount,
                                              &HighQualityOpusConfig);
         if (err != 0) {
           LC_ASSERT(err == 0);
@@ -949,14 +1083,19 @@ bool parseSdpAttributeToInt(const char *payload, const char *name, int *val) {
 
 // Perform RTSP Handshake with the streaming server machine as part of the
 // connection process
-int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
+int performRtspHandshakeCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverInfo) {
   int ret;
+  RTSP_HANDSHAKE_CONTEXT rtspStack;
+  PRTSP_HANDSHAKE_CONTEXT rtsp = &rtspStack;
+
+  memset(rtsp, 0, sizeof(*rtsp));
+  sock = INVALID_SOCKET;
 
   LC_ASSERT(RtspPortNumber != 0);
 
   // Initialize global state
-  useEnet = (AppVersionQuad[0] >= 5) && (AppVersionQuad[0] <= 7) &&
-            (AppVersionQuad[2] < 404);
+  useEnet = (ConnectionAppVersionQuad[0] >= 5) && (ConnectionAppVersionQuad[0] <= 7) &&
+            (ConnectionAppVersionQuad[2] < 404);
   currentSeqNumber = 1;
   hasSessionId = false;
   controlStreamId = APP_VERSION_AT_LEAST(7, 1, 431) ? "streamid=control/13/0"
@@ -1011,7 +1150,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
              useEnet ? "ru" : "", urlAddr, RtspPortNumber);
   }
 
-  switch (AppVersionQuad[0]) {
+  switch (ConnectionAppVersionQuad[0]) {
   case 3:
     rtspClientVersion = 10;
     break;
@@ -1073,7 +1212,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     RTSP_MESSAGE response;
     int error = -1;
 
-    if (!requestOptions(&response, &error)) {
+    if (!requestOptions(ctx, rtsp, &response, &error)) {
       Limelog("RTSP OPTIONS request failed: %d\n", error);
       ret = error;
       goto Exit;
@@ -1093,7 +1232,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     RTSP_MESSAGE response;
     int error = -1;
 
-    if (!requestDescribe(&response, &error)) {
+    if (!requestDescribe(ctx, rtsp, &response, &error)) {
       Limelog("RTSP DESCRIBE request failed: %d\n", error);
       ret = error;
       goto Exit;
@@ -1195,7 +1334,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     EncryptionFeaturesEnabled = 0;
 
     // Parse the Opus surround parameters out of the RTSP DESCRIBE response.
-    ret = parseOpusConfigurations(&response);
+    ret = parseOpusConfigurations(ctx, rtsp, &response);
     if (ret != 0) {
       goto Exit;
     }
@@ -1210,8 +1349,8 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     int error = -1;
     char *strtokCtx = NULL;
 
-    if (!setupStream(&response,
-                     AppVersionQuad[0] >= 5 ? "streamid=audio/0/0"
+    if (!setupStream(ctx, rtsp, &response,
+             ConnectionAppVersionQuad[0] >= 5 ? "streamid=audio/0/0"
                                             : "streamid=audio",
                      &error)) {
       Limelog("RTSP SETUP streamid=audio request failed: %d\n", error);
@@ -1228,7 +1367,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
 
     // Parse the audio port out of the RTSP SETUP response
     LC_ASSERT(AudioPortNumber == 0);
-    if (!parseServerPortFromTransport(&response, &AudioPortNumber)) {
+    if (!parseServerPortFromTransport(ctx, &response, &AudioPortNumber)) {
       // Use the well known port if parsing fails
       AudioPortNumber = 48000;
 
@@ -1281,8 +1420,8 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     int error = -1;
     char *pingPayload;
 
-    if (!setupStream(&response,
-                     AppVersionQuad[0] >= 5 ? "streamid=video/0/0"
+    if (!setupStream(ctx, rtsp, &response,
+             ConnectionAppVersionQuad[0] >= 5 ? "streamid=video/0/0"
                                             : "streamid=video",
                      &error)) {
       Limelog("RTSP SETUP streamid=video request failed: %d\n", error);
@@ -1308,7 +1447,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
 
     // Parse the video port out of the RTSP SETUP response
     LC_ASSERT(VideoPortNumber == 0);
-    if (!parseServerPortFromTransport(&response, &VideoPortNumber)) {
+    if (!parseServerPortFromTransport(ctx, &response, &VideoPortNumber)) {
       // Use the well known port if parsing fails
       VideoPortNumber = 47998;
 
@@ -1327,8 +1466,8 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     int error = -1;
     char *pingPayload;
 
-    if (!setupStream(&response,
-                     AppVersionQuad[0] >= 5 ? "streamid=mic/0/0"
+    if (!setupStream(ctx, rtsp, &response,
+             ConnectionAppVersionQuad[0] >= 5 ? "streamid=mic/0/0"
                                             : "streamid=mic",
                      &error)) {
       Limelog("RTSP SETUP streamid=mic request failed: %d\n", error);
@@ -1345,7 +1484,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
 
     // Parse the microphone port out of the RTSP SETUP response
     LC_ASSERT(MicPortNumber == 0);
-    if (!parseServerPortFromTransport(&response, &MicPortNumber)) {
+    if (!parseServerPortFromTransport(ctx, &response, &MicPortNumber)) {
       // Use the well known port if parsing fails
       MicPortNumber = 47996;
 
@@ -1366,12 +1505,12 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     freeMessage(&response);
   }
 
-  if (AppVersionQuad[0] >= 5) {
+  if (ConnectionAppVersionQuad[0] >= 5) {
     RTSP_MESSAGE response;
     int error = -1;
     char *connectData;
 
-    if (!setupStream(&response, controlStreamId, &error)) {
+    if (!setupStream(ctx, rtsp, &response, controlStreamId, &error)) {
       Limelog("RTSP SETUP streamid=control request failed: %d\n", error);
       ret = error;
       goto Exit;
@@ -1394,7 +1533,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
 
     // Parse the control port out of the RTSP SETUP response
     LC_ASSERT(ControlPortNumber == 0);
-    if (!parseServerPortFromTransport(&response, &ControlPortNumber)) {
+    if (!parseServerPortFromTransport(ctx, &response, &ControlPortNumber)) {
       // Use the well known port if parsing fails
       ControlPortNumber = (uint16_t)47999;
 
@@ -1410,7 +1549,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     RTSP_MESSAGE response;
     int error = -1;
 
-    if (!sendVideoAnnounce(&response, &error)) {
+    if (!sendVideoAnnounce(ctx, rtsp, &response, &error)) {
       Limelog("RTSP ANNOUNCE request failed: %d\n", error);
       ret = error;
       goto Exit;
@@ -1431,7 +1570,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
     RTSP_MESSAGE response;
     int error = -1;
 
-    if (!playStream(&response, "/", &error)) {
+    if (!playStream(ctx, rtsp, &response, "/", &error)) {
       Limelog("RTSP PLAY request failed: %d\n", error);
       ret = error;
       goto Exit;
@@ -1449,7 +1588,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
       RTSP_MESSAGE response;
       int error = -1;
 
-      if (!playStream(&response, "streamid=video", &error)) {
+      if (!playStream(ctx, rtsp, &response, "streamid=video", &error)) {
         Limelog("RTSP PLAY streamid=video request failed: %d\n", error);
         ret = error;
         goto Exit;
@@ -1469,7 +1608,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
       RTSP_MESSAGE response;
       int error = -1;
 
-      if (!playStream(&response, "streamid=audio", &error)) {
+      if (!playStream(ctx, rtsp, &response, "streamid=audio", &error)) {
         Limelog("RTSP PLAY streamid=audio request failed: %d\n", error);
         ret = error;
         goto Exit;
@@ -1490,7 +1629,7 @@ int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
       RTSP_MESSAGE response;
       int error = -1;
 
-      if (!playStream(&response, "streamid=mic", &error)) {
+      if (!playStream(ctx, rtsp, &response, "streamid=mic", &error)) {
         Limelog("RTSP PLAY streamid=mic request failed: %d\n", error);
         ret = error;
         goto Exit;
@@ -1533,4 +1672,8 @@ Exit:
   decryptionCtx = encryptionCtx = NULL;
 
   return ret;
+}
+
+int performRtspHandshake(PSERVER_INFORMATION serverInfo) {
+    return performRtspHandshakeCtx(&gConnectionContext, serverInfo);
 }

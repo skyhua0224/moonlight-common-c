@@ -45,12 +45,14 @@ typedef struct _RTP_VIDEO_QUEUE {
 
     uint32_t lastOosFramePresentationTimestamp;
     bool receivedOosData;
+
+    PML_DEPACKETIZER_CONTEXT depacketizerContext;
 } RTP_VIDEO_QUEUE, *PRTP_VIDEO_QUEUE;
 
 #define RTPF_RET_QUEUED    0
 #define RTPF_RET_REJECTED  1
 
-void RtpvInitializeQueue(PRTP_VIDEO_QUEUE queue);
+void RtpvInitializeQueue(PRTP_VIDEO_QUEUE queue, PML_DEPACKETIZER_CONTEXT depacketizerContext);
 void RtpvCleanupQueue(PRTP_VIDEO_QUEUE queue);
 int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_QUEUE_ENTRY packetEntry);
 uint32_t RtpvGetCurrentFrameNumber(PRTP_VIDEO_QUEUE queue);

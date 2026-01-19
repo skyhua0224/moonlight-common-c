@@ -1,24 +1,52 @@
 #include "Limelight-internal.h"
 
+#ifdef StreamConfig
+#undef StreamConfig
+#endif
+#ifdef RemoteAddr
+#undef RemoteAddr
+#endif
+#ifdef LocalAddr
+#undef LocalAddr
+#endif
+#ifdef AddrLen
+#undef AddrLen
+#endif
+#ifdef VideoPortNumber
+#undef VideoPortNumber
+#endif
+#ifdef VideoPingPayload
+#undef VideoPingPayload
+#endif
+#ifdef EncryptionFeaturesEnabled
+#undef EncryptionFeaturesEnabled
+#endif
+#ifdef NegotiatedVideoFormat
+#undef NegotiatedVideoFormat
+#endif
+#ifdef VideoCallbacks
+#undef VideoCallbacks
+#endif
+#ifdef ListenerCallbacks
+#undef ListenerCallbacks
+#endif
+
 #define FIRST_FRAME_MAX 1500
 #define FIRST_FRAME_TIMEOUT_SEC 10
 
 #define FIRST_FRAME_PORT 47996
 
-static RTP_VIDEO_QUEUE rtpQueue;
-
-static SOCKET rtpSocket = INVALID_SOCKET;
-static SOCKET firstFrameSocket = INVALID_SOCKET;
-
-static PPLT_CRYPTO_CONTEXT decryptionCtx;
-
-static PLT_THREAD udpPingThread;
-static PLT_THREAD receiveThread;
-static PLT_THREAD decoderThread;
-
-static bool receivedDataFromPeer;
-static uint64_t firstDataTimeMs;
-static bool receivedFullFrame;
+#define StreamConfig (ctx->connectionContext->StreamConfig)
+#define RemoteAddr (ctx->connectionContext->RemoteAddr)
+#define LocalAddr (ctx->connectionContext->LocalAddr)
+#define AddrLen (ctx->connectionContext->AddrLen)
+#define VideoPortNumber (ctx->connectionContext->VideoPortNumber)
+#define VideoPingPayload (ctx->connectionContext->VideoPingPayload)
+#define EncryptionFeaturesEnabled (ctx->connectionContext->EncryptionFeaturesEnabled)
+#define NegotiatedVideoFormat (ctx->connectionContext->NegotiatedVideoFormat)
+#define VideoCallbacks (ctx->connectionContext->VideoCallbacks)
+#define AppVersionQuad (ctx->connectionContext->AppVersionQuad)
+#define ListenerCallbacks (ctx->connectionContext->ListenerCallbacks)
 
 // We can't request an IDR frame until the depacketizer knows
 // that a packet was lost. This timeout bounds the time that
@@ -34,25 +62,40 @@ static bool receivedFullFrame;
 // and subsequent packet/frame bursts that follow.
 #define RTP_RECV_PACKETS_BUFFERED 2048
 
+// Initialize the video stream (context)
+void initializeVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
+    ctx->connectionContext = connectionContext;
+    initializeVideoDepacketizerCtx(&ctx->depacketizerContext, connectionContext, StreamConfig.packetSize);
+    RtpvInitializeQueue(&ctx->rtpQueue, &ctx->depacketizerContext);
+    ctx->decryptionCtx = PltCreateCryptoContext();
+    ctx->rtpSocket = INVALID_SOCKET;
+    ctx->firstFrameSocket = INVALID_SOCKET;
+    ctx->receivedDataFromPeer = false;
+    ctx->firstDataTimeMs = 0;
+    ctx->receivedFullFrame = false;
+}
+
 // Initialize the video stream
 void initializeVideoStream(void) {
-    initializeVideoDepacketizer(StreamConfig.packetSize);
-    RtpvInitializeQueue(&rtpQueue);
-    decryptionCtx = PltCreateCryptoContext();
-    receivedDataFromPeer = false;
-    firstDataTimeMs = 0;
-    receivedFullFrame = false;
+    initializeVideoStreamCtx(&gConnectionContext.videoContext, &gConnectionContext);
+}
+
+// Clean up the video stream (context)
+void destroyVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
+    PltDestroyCryptoContext(ctx->decryptionCtx);
+    destroyVideoDepacketizerCtx(&ctx->depacketizerContext);
+    RtpvCleanupQueue(&ctx->rtpQueue);
+    ctx->decryptionCtx = NULL;
 }
 
 // Clean up the video stream
 void destroyVideoStream(void) {
-    PltDestroyCryptoContext(decryptionCtx);
-    destroyVideoDepacketizer();
-    RtpvCleanupQueue(&rtpQueue);
+    destroyVideoStreamCtx(&gConnectionContext.videoContext);
 }
 
 // UDP Ping proc
 static void VideoPingThreadProc(void* context) {
+    PML_VIDEO_STREAM_CONTEXT ctx = (PML_VIDEO_STREAM_CONTEXT)context;
     char legacyPingData[] = { 0x50, 0x49, 0x4E, 0x47 };
     LC_SOCKADDR saddr;
 
@@ -66,23 +109,24 @@ static void VideoPingThreadProc(void* context) {
     // issues related to receiving ICMP port unreachable messages due
     // to sending a packet prior to the host PC binding to that port.
     int pingCount = 0;
-    while (!PltIsThreadInterrupted(&udpPingThread)) {
+    while (!PltIsThreadInterrupted(&ctx->udpPingThread)) {
         if (VideoPingPayload.payload[0] != 0) {
             pingCount++;
             VideoPingPayload.sequenceNumber = BE32(pingCount);
 
-            sendto(rtpSocket, (char*)&VideoPingPayload, sizeof(VideoPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
+            sendto(ctx->rtpSocket, (char*)&VideoPingPayload, sizeof(VideoPingPayload), 0, (struct sockaddr*)&saddr, AddrLen);
         }
         else {
-            sendto(rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
+            sendto(ctx->rtpSocket, legacyPingData, sizeof(legacyPingData), 0, (struct sockaddr*)&saddr, AddrLen);
         }
 
-        PltSleepMsInterruptible(&udpPingThread, 500);
+        PltSleepMsInterruptible(&ctx->udpPingThread, 500);
     }
 }
 
 // Receive thread proc
 static void VideoReceiveThreadProc(void* context) {
+    PML_VIDEO_STREAM_CONTEXT ctx = (PML_VIDEO_STREAM_CONTEXT)context;
     int err;
     int bufferSize, receiveSize, decryptedSize, minSize;
     char* buffer;
@@ -99,7 +143,7 @@ static void VideoReceiveThreadProc(void* context) {
     bufferSize = decryptedSize + sizeof(RTPV_QUEUE_ENTRY);
     buffer = NULL;
 
-    if (setNonFatalRecvTimeoutMs(rtpSocket, UDP_RECV_POLL_TIMEOUT_MS) < 0) {
+    if (setNonFatalRecvTimeoutMs(ctx->rtpSocket, UDP_RECV_POLL_TIMEOUT_MS) < 0) {
         // SO_RCVTIMEO failed, so use select() to wait
         useSelect = true;
     }
@@ -122,7 +166,7 @@ static void VideoReceiveThreadProc(void* context) {
     }
 
     waitingForVideoMs = 0;
-    while (!PltIsThreadInterrupted(&receiveThread)) {
+    while (!PltIsThreadInterrupted(&ctx->receiveThread)) {
         PRTP_PACKET packet;
 
         if (buffer == NULL) {
@@ -134,7 +178,7 @@ static void VideoReceiveThreadProc(void* context) {
             }
         }
 
-        err = recvUdpSocket(rtpSocket,
+        err = recvUdpSocket(ctx->rtpSocket,
                             encrypted ? encryptedBuffer : buffer,
                             receiveSize,
                             useSelect);
@@ -144,7 +188,7 @@ static void VideoReceiveThreadProc(void* context) {
             break;
         }
         else if  (err == 0) {
-            if (!receivedDataFromPeer) {
+            if (!ctx->receivedDataFromPeer) {
                 // If we wait many seconds without ever receiving a video packet,
                 // assume something is broken and terminate the connection.
                 waitingForVideoMs += UDP_RECV_POLL_TIMEOUT_MS;
@@ -159,18 +203,18 @@ static void VideoReceiveThreadProc(void* context) {
             continue;
         }
 
-        if (!receivedDataFromPeer) {
-            receivedDataFromPeer = true;
+        if (!ctx->receivedDataFromPeer) {
+            ctx->receivedDataFromPeer = true;
             Limelog("Received first video packet after %d ms\n", waitingForVideoMs);
 
-            firstDataTimeMs = PltGetMillis();
+            ctx->firstDataTimeMs = PltGetMillis();
         }
 
 #ifndef LC_FUZZING
-        if (!receivedFullFrame) {
+        if (!ctx->receivedFullFrame) {
             uint64_t now = PltGetMillis();
 
-            if (now - firstDataTimeMs >= FIRST_FRAME_TIMEOUT_SEC * 1000) {
+            if (now - ctx->firstDataTimeMs >= FIRST_FRAME_TIMEOUT_SEC * 1000) {
                 Limelog("Terminating connection due to lack of a successful video frame\n");
                 ListenerCallbacks.connectionTerminated(ML_ERROR_NO_VIDEO_FRAME);
                 break;
@@ -208,11 +252,11 @@ static void VideoReceiveThreadProc(void* context) {
             // couldn't already do. If they're not on-link, we just throw their malicious
             // traffic away (as mentioned in the paragraph above) and continue accepting
             // legitmate video traffic.
-            if (encHeader->frameNumber && LE32(encHeader->frameNumber) < RtpvGetCurrentFrameNumber(&rtpQueue)) {
+            if (encHeader->frameNumber && LE32(encHeader->frameNumber) < RtpvGetCurrentFrameNumber(&ctx->rtpQueue)) {
                 continue;
             }
 
-            if (!PltDecryptMessage(decryptionCtx, ALGORITHM_AES_GCM, 0,
+            if (!PltDecryptMessage(ctx->decryptionCtx, ALGORITHM_AES_GCM, 0,
                                    (unsigned char*)StreamConfig.remoteInputAesKey, sizeof(StreamConfig.remoteInputAesKey),
                                    encHeader->iv, sizeof(encHeader->iv),
                                    encHeader->tag, sizeof(encHeader->tag),
@@ -229,7 +273,7 @@ static void VideoReceiveThreadProc(void* context) {
         packet->timestamp = BE32(packet->timestamp);
         packet->ssrc = BE32(packet->ssrc);
 
-        queueStatus = RtpvAddPacket(&rtpQueue, packet, err, (PRTPV_QUEUE_ENTRY)&buffer[decryptedSize]);
+        queueStatus = RtpvAddPacket(&ctx->rtpQueue, packet, err, (PRTPV_QUEUE_ENTRY)&buffer[decryptedSize]);
 
         if (queueStatus == RTPF_RET_QUEUED) {
             // The queue owns the buffer
@@ -246,80 +290,95 @@ static void VideoReceiveThreadProc(void* context) {
     }
 }
 
-void notifyKeyFrameReceived(void) {
+void notifyKeyFrameReceivedCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
     // Remember that we got a full frame successfully
-    receivedFullFrame = true;
+    ctx->receivedFullFrame = true;
+}
+
+void notifyKeyFrameReceived(void) {
+    notifyKeyFrameReceivedCtx(&gConnectionContext.videoContext);
 }
 
 // Decoder thread proc
 static void VideoDecoderThreadProc(void* context) {
-    while (!PltIsThreadInterrupted(&decoderThread)) {
+    PML_VIDEO_STREAM_CONTEXT ctx = (PML_VIDEO_STREAM_CONTEXT)context;
+    while (!PltIsThreadInterrupted(&ctx->decoderThread)) {
         VIDEO_FRAME_HANDLE frameHandle;
         PDECODE_UNIT decodeUnit;
 
-        if (!LiWaitForNextVideoFrame(&frameHandle, &decodeUnit)) {
+        if (!LiWaitForNextVideoFrameCtx(&ctx->depacketizerContext, &frameHandle, &decodeUnit)) {
             return;
         }
 
-        LiCompleteVideoFrame(frameHandle, VideoCallbacks.submitDecodeUnit(decodeUnit));
+        LiCompleteVideoFrameCtx(&ctx->depacketizerContext, frameHandle, VideoCallbacks.submitDecodeUnit(decodeUnit));
     }
 }
 
-// Read the first frame of the video stream
-int readFirstFrame(void) {
+// Read the first frame of the video stream (context)
+static int readFirstFrameCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
     // All that matters is that we close this socket.
     // This starts the flow of video on Gen 3 servers.
 
-    closeSocket(firstFrameSocket);
-    firstFrameSocket = INVALID_SOCKET;
+    closeSocket(ctx->firstFrameSocket);
+    ctx->firstFrameSocket = INVALID_SOCKET;
 
     return 0;
 }
 
-// Terminate the video stream
-void stopVideoStream(void) {
-    if (!receivedDataFromPeer) {
+// Read the first frame of the video stream
+int readFirstFrame(void) {
+    return readFirstFrameCtx(&gConnectionContext.videoContext);
+}
+
+// Terminate the video stream (context)
+void stopVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
+    if (!ctx->receivedDataFromPeer) {
         Limelog("No video traffic was ever received from the host!\n");
     }
 
     VideoCallbacks.stop();
 
     // Wake up client code that may be waiting on the decode unit queue
-    stopVideoDepacketizer();
-    
-    PltInterruptThread(&udpPingThread);
-    PltInterruptThread(&receiveThread);
+    stopVideoDepacketizerCtx(&ctx->depacketizerContext);
+
+    PltInterruptThread(&ctx->udpPingThread);
+    PltInterruptThread(&ctx->receiveThread);
     if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-        PltInterruptThread(&decoderThread);
+        PltInterruptThread(&ctx->decoderThread);
     }
 
-    if (firstFrameSocket != INVALID_SOCKET) {
-        shutdownTcpSocket(firstFrameSocket);
+    if (ctx->firstFrameSocket != INVALID_SOCKET) {
+        shutdownTcpSocket(ctx->firstFrameSocket);
     }
 
-    PltJoinThread(&udpPingThread);
-    PltJoinThread(&receiveThread);
+    PltJoinThread(&ctx->udpPingThread);
+    PltJoinThread(&ctx->receiveThread);
     if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-        PltJoinThread(&decoderThread);
+        PltJoinThread(&ctx->decoderThread);
     }
-    
-    if (firstFrameSocket != INVALID_SOCKET) {
-        closeSocket(firstFrameSocket);
-        firstFrameSocket = INVALID_SOCKET;
+
+    if (ctx->firstFrameSocket != INVALID_SOCKET) {
+        closeSocket(ctx->firstFrameSocket);
+        ctx->firstFrameSocket = INVALID_SOCKET;
     }
-    if (rtpSocket != INVALID_SOCKET) {
-        closeSocket(rtpSocket);
-        rtpSocket = INVALID_SOCKET;
+    if (ctx->rtpSocket != INVALID_SOCKET) {
+        closeSocket(ctx->rtpSocket);
+        ctx->rtpSocket = INVALID_SOCKET;
     }
 
     VideoCallbacks.cleanup();
 }
 
-// Start the video stream
-int startVideoStream(void* rendererContext, int drFlags) {
+// Terminate the video stream
+void stopVideoStream(void) {
+    stopVideoStreamCtx(&gConnectionContext.videoContext);
+}
+
+// Start the video stream (context)
+int startVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, void* rendererContext, int drFlags) {
     int err;
 
-    firstFrameSocket = INVALID_SOCKET;
+    ctx->firstFrameSocket = INVALID_SOCKET;
 
     // This must be called before the decoder thread starts submitting
     // decode units
@@ -330,31 +389,31 @@ int startVideoStream(void* rendererContext, int drFlags) {
         return err;
     }
 
-    rtpSocket = bindUdpSocket(RemoteAddr.ss_family, &LocalAddr, AddrLen,
+    ctx->rtpSocket = bindUdpSocket(RemoteAddr.ss_family, &LocalAddr, AddrLen,
                               RTP_RECV_PACKETS_BUFFERED * (StreamConfig.packetSize + MAX_RTP_HEADER_SIZE),
                               SOCK_QOS_TYPE_VIDEO);
-    if (rtpSocket == INVALID_SOCKET) {
+    if (ctx->rtpSocket == INVALID_SOCKET) {
         VideoCallbacks.cleanup();
         return LastSocketError();
     }
 
     VideoCallbacks.start();
 
-    err = PltCreateThread("VideoRecv", VideoReceiveThreadProc, NULL, &receiveThread);
+    err = PltCreateThread("VideoRecv", VideoReceiveThreadProc, ctx, &ctx->receiveThread);
     if (err != 0) {
         VideoCallbacks.stop();
-        closeSocket(rtpSocket);
+        closeSocket(ctx->rtpSocket);
         VideoCallbacks.cleanup();
         return err;
     }
 
     if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-        err = PltCreateThread("VideoDec", VideoDecoderThreadProc, NULL, &decoderThread);
+        err = PltCreateThread("VideoDec", VideoDecoderThreadProc, ctx, &ctx->decoderThread);
         if (err != 0) {
             VideoCallbacks.stop();
-            PltInterruptThread(&receiveThread);
-            PltJoinThread(&receiveThread);
-            closeSocket(rtpSocket);
+            PltInterruptThread(&ctx->receiveThread);
+            PltJoinThread(&ctx->receiveThread);
+            closeSocket(ctx->rtpSocket);
             VideoCallbacks.cleanup();
             return err;
         }
@@ -362,20 +421,20 @@ int startVideoStream(void* rendererContext, int drFlags) {
 
     if (AppVersionQuad[0] == 3) {
         // Connect this socket to open port 47998 for our ping thread
-        firstFrameSocket = connectTcpSocket(&RemoteAddr, AddrLen,
+        ctx->firstFrameSocket = connectTcpSocket(&RemoteAddr, AddrLen,
                                             FIRST_FRAME_PORT, FIRST_FRAME_TIMEOUT_SEC);
-        if (firstFrameSocket == INVALID_SOCKET) {
+        if (ctx->firstFrameSocket == INVALID_SOCKET) {
             VideoCallbacks.stop();
-            stopVideoDepacketizer();
-            PltInterruptThread(&receiveThread);
+            stopVideoDepacketizerCtx(&ctx->depacketizerContext);
+            PltInterruptThread(&ctx->receiveThread);
             if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-                PltInterruptThread(&decoderThread);
+                PltInterruptThread(&ctx->decoderThread);
             }
-            PltJoinThread(&receiveThread);
+            PltJoinThread(&ctx->receiveThread);
             if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-                PltJoinThread(&decoderThread);
+                PltJoinThread(&ctx->decoderThread);
             }
-            closeSocket(rtpSocket);
+            closeSocket(ctx->rtpSocket);
             VideoCallbacks.cleanup();
             return LastSocketError();
         }
@@ -383,22 +442,22 @@ int startVideoStream(void* rendererContext, int drFlags) {
 
     // Start pinging before reading the first frame so GFE knows where
     // to send UDP data
-    err = PltCreateThread("VideoPing", VideoPingThreadProc, NULL, &udpPingThread);
+    err = PltCreateThread("VideoPing", VideoPingThreadProc, ctx, &ctx->udpPingThread);
     if (err != 0) {
         VideoCallbacks.stop();
-        stopVideoDepacketizer();
-        PltInterruptThread(&receiveThread);
+        stopVideoDepacketizerCtx(&ctx->depacketizerContext);
+        PltInterruptThread(&ctx->receiveThread);
         if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-            PltInterruptThread(&decoderThread);
+            PltInterruptThread(&ctx->decoderThread);
         }
-        PltJoinThread(&receiveThread);
+        PltJoinThread(&ctx->receiveThread);
         if ((VideoCallbacks.capabilities & (CAPABILITY_DIRECT_SUBMIT | CAPABILITY_PULL_RENDERER)) == 0) {
-            PltJoinThread(&decoderThread);
+            PltJoinThread(&ctx->decoderThread);
         }
-        closeSocket(rtpSocket);
-        if (firstFrameSocket != INVALID_SOCKET) {
-            closeSocket(firstFrameSocket);
-            firstFrameSocket = INVALID_SOCKET;
+        closeSocket(ctx->rtpSocket);
+        if (ctx->firstFrameSocket != INVALID_SOCKET) {
+            closeSocket(ctx->firstFrameSocket);
+            ctx->firstFrameSocket = INVALID_SOCKET;
         }
         VideoCallbacks.cleanup();
         return err;
@@ -406,12 +465,17 @@ int startVideoStream(void* rendererContext, int drFlags) {
 
     if (AppVersionQuad[0] == 3) {
         // Read the first frame to start the flow of video
-        err = readFirstFrame();
+        err = readFirstFrameCtx(ctx);
         if (err != 0) {
-            stopVideoStream();
+            stopVideoStreamCtx(ctx);
             return err;
         }
     }
 
     return 0;
+}
+
+// Start the video stream
+int startVideoStream(void* rendererContext, int drFlags) {
+    return startVideoStreamCtx(&gConnectionContext.videoContext, rendererContext, drFlags);
 }

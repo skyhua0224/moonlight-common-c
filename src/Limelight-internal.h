@@ -8,52 +8,25 @@
 #include "Video.h"
 #include "Input.h"
 #include "RtpAudioQueue.h"
-#include "RtpVideoQueue.h"
 #include "ByteBuffer.h"
+
+// Forward declarations for context types
+typedef struct _ML_CONNECTION_CONTEXT ML_CONNECTION_CONTEXT, *PML_CONNECTION_CONTEXT;
+typedef struct _ML_CONTROL_STREAM_CONTEXT ML_CONTROL_STREAM_CONTEXT, *PML_CONTROL_STREAM_CONTEXT;
+typedef struct _ML_DEPACKETIZER_CONTEXT ML_DEPACKETIZER_CONTEXT, *PML_DEPACKETIZER_CONTEXT;
+
+#include "RtpVideoQueue.h"
 
 #include <enet/enet.h>
 
 // Common globals
-extern char* RemoteAddrString;
-extern struct sockaddr_storage RemoteAddr;
-extern struct sockaddr_storage LocalAddr;
-extern SOCKADDR_LEN AddrLen;
 extern int AppVersionQuad[4];
-extern STREAM_CONFIGURATION StreamConfig;
-extern CONNECTION_LISTENER_CALLBACKS ListenerCallbacks;
-extern DECODER_RENDERER_CALLBACKS VideoCallbacks;
-extern AUDIO_RENDERER_CALLBACKS AudioCallbacks;
-extern int NegotiatedVideoFormat;
-extern volatile bool ConnectionInterrupted;
-extern bool HighQualitySurroundSupported;
-extern bool HighQualitySurroundEnabled;
-extern OPUS_MULTISTREAM_CONFIGURATION NormalQualityOpusConfig;
-extern OPUS_MULTISTREAM_CONFIGURATION HighQualityOpusConfig;
-extern int AudioPacketDuration;
-extern bool AudioEncryptionEnabled;
-extern bool ReferenceFrameInvalidationSupported;
-
-extern uint16_t RtspPortNumber;
-extern uint16_t ControlPortNumber;
-extern uint16_t AudioPortNumber;
-extern uint16_t VideoPortNumber;
-extern uint16_t MicPortNumber;
-
-extern SS_PING AudioPingPayload;
-extern SS_PING VideoPingPayload;
-extern SS_PING MicPingPayload;
-extern uint32_t ControlConnectData;
-
-extern uint32_t SunshineFeatureFlags;
 
 // Encryption flags shared by Sunshine and Moonlight in RTSP
 #define SS_ENC_CONTROL_V2 0x01
 #define SS_ENC_VIDEO 0x02
 #define SS_ENC_AUDIO 0x04
 
-extern uint32_t EncryptionFeaturesSupported;
-extern uint32_t EncryptionFeaturesRequested;
-extern uint32_t EncryptionFeaturesEnabled;
 
 // ENet channel ID values
 #define CTRL_CHANNEL_GENERIC      0x00
@@ -84,7 +57,13 @@ extern uint32_t EncryptionFeaturesEnabled;
      (AppVersionQuad[0] == (a) && AppVersionQuad[1] > (b)) ||                               \
      (AppVersionQuad[0] == (a) && AppVersionQuad[1] == (b) && AppVersionQuad[2] >= (c)))
 
+#define APP_VERSION_AT_LEAST_CTX(ctx, a, b, c)                                              \
+    ((ctx->AppVersionQuad[0] > (a)) ||                                                      \
+     (ctx->AppVersionQuad[0] == (a) && ctx->AppVersionQuad[1] > (b)) ||                     \
+     (ctx->AppVersionQuad[0] == (a) && ctx->AppVersionQuad[1] == (b) && ctx->AppVersionQuad[2] >= (c)))
+
 #define IS_SUNSHINE() (AppVersionQuad[3] < 0)
+#define IS_SUNSHINE_CTX(ctx) (ctx->AppVersionQuad[3] < 0)
 
 // Client feature flags for x-ml-general.featureFlags SDP attribute
 #define ML_FF_FEC_STATUS 0x01 // Client sends SS_FRAME_FEC_STATUS for frame losses
@@ -116,6 +95,9 @@ void setRecorderCallbacks(PDECODER_RENDERER_CALLBACKS drCallbacks, PAUDIO_RENDER
 
 char* getSdpPayloadForStreamConfig(int rtspClientVersion, int* length);
 
+// Forward declarations
+typedef struct _ML_CONTROL_STREAM_CONTEXT ML_CONTROL_STREAM_CONTEXT, *PML_CONTROL_STREAM_CONTEXT;
+
 int initializeControlStream(void);
 int startControlStream(void);
 int stopControlStream(void);
@@ -125,8 +107,13 @@ void connectionReceivedCompleteFrame(uint32_t frameIndex);
 void connectionSawFrame(uint32_t frameIndex);
 void connectionSendFrameFecStatus(PSS_FRAME_FEC_STATUS fecStatus);
 int sendInputPacketOnControlStream(unsigned char* data, int length, uint8_t channelId, uint32_t flags, bool moreData);
+int sendInputPacketOnControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx, unsigned char* data, int length, uint8_t channelId, uint32_t flags, bool moreData);
 void flushInputOnControlStream(void);
+void flushInputOnControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx);
 bool isControlDataInTransit(void);
+bool isControlDataInTransitCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVariance);
+bool LiGetEstimatedRttInfoCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t* estimatedRtt, uint32_t* estimatedRttVariance);
 
 int performRtspHandshake(PSERVER_INFORMATION serverInfo);
 
@@ -143,6 +130,383 @@ void notifyKeyFrameReceived(void);
 int startVideoStream(void* rendererContext, int drFlags);
 void stopVideoStream(void);
 
+// Forward declarations
+// typedef struct _ML_CONNECTION_CONTEXT ML_CONNECTION_CONTEXT, *PML_CONNECTION_CONTEXT; (Moved to top)
+// typedef struct _ML_CONTROL_STREAM_CONTEXT ML_CONTROL_STREAM_CONTEXT, *PML_CONTROL_STREAM_CONTEXT; (Moved to top)
+
+// Depacketizer context
+typedef struct _ML_DEPACKETIZER_CONTEXT {
+    PLENTRY nalChainHead;
+    PLENTRY nalChainTail;
+    int nalChainDataLength;
+
+    unsigned int nextFrameNumber;
+    unsigned int startFrameNumber;
+    bool waitingForNextSuccessfulFrame;
+    bool waitingForIdrFrame;
+    bool waitingForRefInvalFrame;
+    unsigned int lastPacketInStream;
+    bool decodingFrame;
+    int frameType;
+    uint16_t lastPacketPayloadLength;
+    bool strictIdrFrameWait;
+    uint64_t syntheticPtsBase;
+    uint16_t frameHostProcessingLatency;
+    uint64_t firstPacketReceiveTime;
+    unsigned int firstPacketPresentationTime;
+    bool dropStatePending;
+    bool idrFrameProcessed;
+
+    unsigned int consecutiveFrameDrops;
+
+    LINKED_BLOCKING_QUEUE decodeUnitQueue;
+
+    PML_CONNECTION_CONTEXT connectionContext;
+} ML_DEPACKETIZER_CONTEXT, *PML_DEPACKETIZER_CONTEXT;
+
+void initializeVideoDepacketizerCtx(PML_DEPACKETIZER_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext, int pktSize);
+void destroyVideoDepacketizerCtx(PML_DEPACKETIZER_CONTEXT ctx);
+void queueRtpPacketCtx(PML_DEPACKETIZER_CONTEXT ctx, PRTPV_QUEUE_ENTRY queueEntry);
+void stopVideoDepacketizerCtx(PML_DEPACKETIZER_CONTEXT ctx);
+void requestDecoderRefreshCtx(PML_DEPACKETIZER_CONTEXT ctx);
+void notifyFrameLostCtx(PML_DEPACKETIZER_CONTEXT ctx, unsigned int frameNumber, bool speculative);
+int LiGetPendingVideoFramesCtx(PML_DEPACKETIZER_CONTEXT ctx);
+
+bool LiWaitForNextVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, VIDEO_FRAME_HANDLE* frameHandle, PDECODE_UNIT* decodeUnit);
+bool LiPollNextVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, VIDEO_FRAME_HANDLE* frameHandle, PDECODE_UNIT* decodeUnit);
+bool LiPeekNextVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, PDECODE_UNIT* decodeUnit);
+void LiWakeWaitForVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx);
+void LiCompleteVideoFrameCtx(PML_DEPACKETIZER_CONTEXT ctx, VIDEO_FRAME_HANDLE handle, int drStatus);
+
+// Video stream context (multi-stream scaffolding)
+typedef struct _ML_VIDEO_STREAM_CONTEXT {
+    PML_CONNECTION_CONTEXT connectionContext;
+    RTP_VIDEO_QUEUE rtpQueue;
+    ML_DEPACKETIZER_CONTEXT depacketizerContext;
+    SOCKET rtpSocket;
+    SOCKET firstFrameSocket;
+    PPLT_CRYPTO_CONTEXT decryptionCtx;
+    PLT_THREAD udpPingThread;
+    PLT_THREAD receiveThread;
+    PLT_THREAD decoderThread;
+    bool receivedDataFromPeer;
+    uint64_t firstDataTimeMs;
+    bool receivedFullFrame;
+} ML_VIDEO_STREAM_CONTEXT, *PML_VIDEO_STREAM_CONTEXT;
+
+void initializeVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext);
+void destroyVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx);
+void notifyKeyFrameReceivedCtx(PML_VIDEO_STREAM_CONTEXT ctx);
+int startVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, void* rendererContext, int drFlags);
+void stopVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx);
+
+// Audio stream context (multi-stream scaffolding)
+typedef struct _ML_AUDIO_STREAM_CONTEXT {
+        PML_CONNECTION_CONTEXT connectionContext;
+        SOCKET rtpSocket;
+        LINKED_BLOCKING_QUEUE packetQueue;
+        RTP_AUDIO_QUEUE rtpAudioQueue;
+        PLT_THREAD udpPingThread;
+        PLT_THREAD receiveThread;
+        PLT_THREAD decoderThread;
+        PPLT_CRYPTO_CONTEXT audioDecryptionCtx;
+        uint32_t avRiKeyId;
+        unsigned short lastSeq;
+        bool pingThreadStarted;
+        bool receivedDataFromPeer;
+        uint64_t firstReceiveTime;
+#ifdef LC_DEBUG
+        uint8_t opusHeaderByte;
+#endif
+} ML_AUDIO_STREAM_CONTEXT, *PML_AUDIO_STREAM_CONTEXT;
+
+int initializeAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext);
+int notifyAudioPortNegotiationCompleteCtx(PML_AUDIO_STREAM_CONTEXT ctx);
+void destroyAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx);
+int startAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, void* audioContext, int arFlags);
+void stopAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx);
+int LiGetPendingAudioFramesCtx(PML_AUDIO_STREAM_CONTEXT ctx);
+int LiGetPendingAudioDurationCtx(PML_AUDIO_STREAM_CONTEXT ctx);
+
+// Control stream context (multi-stream scaffolding)
+typedef struct _ML_CONTROL_STREAM_CONTEXT {
+        PML_CONNECTION_CONTEXT connectionContext;
+        SOCKET ctlSock;
+        ENetHost* client;
+        ENetPeer* peer;
+        PLT_MUTEX enetMutex;
+        bool usePeriodicPing;
+
+        PLT_THREAD lossStatsThread;
+        PLT_THREAD invalidateRefFramesThread;
+        PLT_THREAD requestIdrFrameThread;
+        PLT_THREAD controlReceiveThread;
+        PLT_THREAD asyncCallbackThread;
+        uint32_t lastGoodFrame;
+        uint32_t lastSeenFrame;
+        bool stopping;
+        bool disconnectPending;
+        bool encryptedControlStream;
+        bool hdrEnabled;
+        SS_HDR_METADATA hdrMetadata;
+
+        int intervalGoodFrameCount;
+        int intervalTotalFrameCount;
+        uint64_t intervalStartTimeMs;
+        int lastIntervalLossPercentage;
+        int lastConnectionStatusUpdate;
+        uint32_t currentEnetSequenceNumber;
+        uint64_t firstFrameTimeMs;
+
+        LINKED_BLOCKING_QUEUE invalidReferenceFrameTuples;
+        LINKED_BLOCKING_QUEUE frameFecStatusQueue;
+        LINKED_BLOCKING_QUEUE asyncCallbackQueue;
+        PLT_EVENT idrFrameRequiredEvent;
+
+        PPLT_CRYPTO_CONTEXT encryptionCtx;
+        PPLT_CRYPTO_CONTEXT decryptionCtx;
+
+        // Protocol version tables
+        short* packetTypes;
+        short* payloadLengths;
+        char** preconstructedPayloads;
+        bool supportsIdrFrameRequest;
+} ML_CONTROL_STREAM_CONTEXT, *PML_CONTROL_STREAM_CONTEXT;
+
+int initializeControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext);
+int startControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+int stopControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+void destroyControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+
+// Microphone stream context (multi-stream scaffolding)
+typedef struct _ML_MICROPHONE_STREAM_CONTEXT {
+    PML_CONNECTION_CONTEXT connectionContext;
+    SOCKET micSocket;
+    PPLT_CRYPTO_CONTEXT micEncryptionCtx;
+} ML_MICROPHONE_STREAM_CONTEXT, *PML_MICROPHONE_STREAM_CONTEXT;
+
+int initializeMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext);
+void destroyMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx);
+int sendMicrophoneDataCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, const char* data, int length);
+
+// Input stream context (multi-stream scaffolding)
+typedef struct _ML_INPUT_STREAM_CONTEXT {
+        PML_CONNECTION_CONTEXT connectionContext;
+        SOCKET inputSock;
+        unsigned char currentAesIv[16];
+        bool initialized;
+        bool encryptedControlStream;
+        bool needsBatchedScroll;
+        int batchedScrollDelta;
+        PPLT_CRYPTO_CONTEXT cryptoContext;
+
+        LINKED_BLOCKING_QUEUE packetQueue;
+        LINKED_BLOCKING_QUEUE packetHolderFreeList;
+        PLT_THREAD inputSendThread;
+
+        float absCurrentPosX;
+        float absCurrentPosY;
+
+        uint8_t currentPenButtonState;
+        PLT_MUTEX batchedInputMutex;
+        struct {
+            float x, y, z;
+            bool dirty;
+        } currentGamepadSensorState[16][2];
+        struct {
+            int deltaX, deltaY;
+            bool dirty;
+        } currentRelativeMouseState;
+        struct {
+            int x, y;
+            int width, height;
+            bool dirty;
+        } currentAbsoluteMouseState;
+} ML_INPUT_STREAM_CONTEXT, *PML_INPUT_STREAM_CONTEXT;
+
+// Connection context (multi-stream scaffolding)
+typedef struct _ML_CONNECTION_CONTEXT {
+    char* RemoteAddrString;
+    struct sockaddr_storage RemoteAddr;
+    struct sockaddr_storage LocalAddr;
+    SOCKADDR_LEN AddrLen;
+    int AppVersionQuad[4];
+    STREAM_CONFIGURATION StreamConfig;
+    CONNECTION_LISTENER_CALLBACKS ListenerCallbacks;
+    DECODER_RENDERER_CALLBACKS VideoCallbacks;
+    AUDIO_RENDERER_CALLBACKS AudioCallbacks;
+    int NegotiatedVideoFormat;
+    volatile bool ConnectionInterrupted;
+    bool HighQualitySurroundSupported;
+    bool HighQualitySurroundEnabled;
+    OPUS_MULTISTREAM_CONFIGURATION NormalQualityOpusConfig;
+    OPUS_MULTISTREAM_CONFIGURATION HighQualityOpusConfig;
+    int AudioPacketDuration;
+    bool AudioEncryptionEnabled;
+    bool ReferenceFrameInvalidationSupported;
+
+    uint16_t RtspPortNumber;
+    uint16_t ControlPortNumber;
+    uint16_t AudioPortNumber;
+    uint16_t VideoPortNumber;
+    uint16_t MicPortNumber;
+
+    SS_PING AudioPingPayload;
+    SS_PING VideoPingPayload;
+    SS_PING MicPingPayload;
+    uint32_t ControlConnectData;
+
+    uint32_t SunshineFeatureFlags;
+    uint32_t EncryptionFeaturesSupported;
+    uint32_t EncryptionFeaturesRequested;
+    uint32_t EncryptionFeaturesEnabled;
+
+    ML_VIDEO_STREAM_CONTEXT videoContext;
+    ML_AUDIO_STREAM_CONTEXT audioContext;
+    ML_CONTROL_STREAM_CONTEXT controlContext;
+    ML_INPUT_STREAM_CONTEXT inputContext;
+    ML_MICROPHONE_STREAM_CONTEXT micContext;
+
+    // Connection state
+    int stage;
+    ConnListenerConnectionTerminated originalTerminationCallback;
+    bool alreadyTerminated;
+    PLT_THREAD terminationCallbackThread;
+    int terminationCallbackErrorCode;
+} ML_CONNECTION_CONTEXT, *PML_CONNECTION_CONTEXT;
+
+extern ML_CONNECTION_CONTEXT gConnectionContext;
+
+// Legacy global access routed to the global connection context
+#ifndef RemoteAddrString
+#define RemoteAddrString (gConnectionContext.RemoteAddrString)
+#endif
+#ifndef RemoteAddr
+#define RemoteAddr (gConnectionContext.RemoteAddr)
+#endif
+#ifndef LocalAddr
+#define LocalAddr (gConnectionContext.LocalAddr)
+#endif
+#ifndef AddrLen
+#define AddrLen (gConnectionContext.AddrLen)
+#endif
+#ifndef StreamConfig
+#define StreamConfig (gConnectionContext.StreamConfig)
+#endif
+#ifndef ListenerCallbacks
+#define ListenerCallbacks (gConnectionContext.ListenerCallbacks)
+#endif
+#ifndef VideoCallbacks
+#define VideoCallbacks (gConnectionContext.VideoCallbacks)
+#endif
+#ifndef AudioCallbacks
+#define AudioCallbacks (gConnectionContext.AudioCallbacks)
+#endif
+#ifndef NegotiatedVideoFormat
+#define NegotiatedVideoFormat (gConnectionContext.NegotiatedVideoFormat)
+#endif
+#ifndef ConnectionInterrupted
+#define ConnectionInterrupted (gConnectionContext.ConnectionInterrupted)
+#endif
+#ifndef HighQualitySurroundSupported
+#define HighQualitySurroundSupported (gConnectionContext.HighQualitySurroundSupported)
+#endif
+#ifndef HighQualitySurroundEnabled
+#define HighQualitySurroundEnabled (gConnectionContext.HighQualitySurroundEnabled)
+#endif
+#ifndef NormalQualityOpusConfig
+#define NormalQualityOpusConfig (gConnectionContext.NormalQualityOpusConfig)
+#endif
+#ifndef HighQualityOpusConfig
+#define HighQualityOpusConfig (gConnectionContext.HighQualityOpusConfig)
+#endif
+#ifndef AudioPacketDuration
+#define AudioPacketDuration (gConnectionContext.AudioPacketDuration)
+#endif
+#ifndef AudioEncryptionEnabled
+#define AudioEncryptionEnabled (gConnectionContext.AudioEncryptionEnabled)
+#endif
+#ifndef ReferenceFrameInvalidationSupported
+#define ReferenceFrameInvalidationSupported (gConnectionContext.ReferenceFrameInvalidationSupported)
+#endif
+
+#ifndef RtspPortNumber
+#define RtspPortNumber (gConnectionContext.RtspPortNumber)
+#endif
+#ifndef ControlPortNumber
+#define ControlPortNumber (gConnectionContext.ControlPortNumber)
+#endif
+#ifndef AudioPortNumber
+#define AudioPortNumber (gConnectionContext.AudioPortNumber)
+#endif
+#ifndef VideoPortNumber
+#define VideoPortNumber (gConnectionContext.VideoPortNumber)
+#endif
+#ifndef MicPortNumber
+#define MicPortNumber (gConnectionContext.MicPortNumber)
+#endif
+
+#ifndef AudioPingPayload
+#define AudioPingPayload (gConnectionContext.AudioPingPayload)
+#endif
+#ifndef VideoPingPayload
+#define VideoPingPayload (gConnectionContext.VideoPingPayload)
+#endif
+#ifndef MicPingPayload
+#define MicPingPayload (gConnectionContext.MicPingPayload)
+#endif
+#ifndef ControlConnectData
+#define ControlConnectData (gConnectionContext.ControlConnectData)
+#endif
+
+#ifndef SunshineFeatureFlags
+#define SunshineFeatureFlags (gConnectionContext.SunshineFeatureFlags)
+#endif
+#ifndef EncryptionFeaturesSupported
+#define EncryptionFeaturesSupported (gConnectionContext.EncryptionFeaturesSupported)
+#endif
+#ifndef EncryptionFeaturesRequested
+#define EncryptionFeaturesRequested (gConnectionContext.EncryptionFeaturesRequested)
+#endif
+#ifndef EncryptionFeaturesEnabled
+#define EncryptionFeaturesEnabled (gConnectionContext.EncryptionFeaturesEnabled)
+#endif
+
+int initializeInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext);
+void destroyInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx);
+int startInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx);
+int stopInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx);
+
+
+int LiSendMouseMoveEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short deltaX, short deltaY);
+int LiSendMousePositionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short x, short y, short referenceWidth, short referenceHeight);
+int LiSendMouseMoveAsMousePositionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short deltaX, short deltaY, short referenceWidth, short referenceHeight);
+int LiSendMouseButtonEventCtx(PML_INPUT_STREAM_CONTEXT ctx, char action, int button);
+int LiSendKeyboardEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short keyCode, char keyAction, char modifiers);
+int LiSendKeyboardEvent2Ctx(PML_INPUT_STREAM_CONTEXT ctx, short keyCode, char keyAction, char modifiers, char flags);
+int LiSendUtf8TextEventCtx(PML_INPUT_STREAM_CONTEXT ctx, const char *text, unsigned int length);
+int LiSendControllerEventCtx(PML_INPUT_STREAM_CONTEXT ctx, int buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger, short leftStickX, short leftStickY, short rightStickX, short rightStickY);
+int LiSendMultiControllerEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short controllerNumber, short activeGamepadMask, int buttonFlags, unsigned char leftTrigger, unsigned char rightTrigger, short leftStickX, short leftStickY, short rightStickX, short rightStickY);
+int LiSendHighResScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmount);
+int LiSendScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, signed char scrollClicks);
+int LiSendHighResHScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmount);
+int LiSendHScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, signed char scrollClicks);
+int LiSendMicrophoneControlCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t control, int sampleRate, int channelCount, int bitrate);
+int LiSendTouchEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t eventType, uint32_t pointerId, float x, float y, float pressureOrDistance, float contactAreaMajor, float contactAreaMinor, uint16_t rotation);
+int LiSendPenEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t eventType, uint8_t toolType, uint8_t penButtons, float x, float y, float pressureOrDistance, float contactAreaMajor, float contactAreaMinor, uint16_t rotation, uint8_t tilt);
+int LiSendControllerArrivalEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint16_t activeGamepadMask, uint8_t type, uint32_t supportedButtonFlags, uint16_t capabilities);
+int LiSendControllerTouchEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t eventType, uint32_t pointerId, float x, float y, float pressure);
+int LiSendControllerMotionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t motionType, float x, float y, float z);
+int LiSendControllerBatteryEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t batteryState, uint8_t batteryPercentage);
+
+void LiRequestIdrFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+bool LiGetCurrentHostDisplayHdrModeCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+bool LiGetHdrMetadataCtx(PML_CONTROL_STREAM_CONTEXT ctx, PSS_HDR_METADATA metadata);
+void connectionDetectedFrameLossCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t startFrame, uint32_t endFrame);
+void connectionReceivedCompleteFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t frameIndex);
+void connectionSawFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t frameIndex);
+void connectionSendFrameFecStatusCtx(PML_CONTROL_STREAM_CONTEXT ctx, PSS_FRAME_FEC_STATUS fecStatus);
+
 int initializeAudioStream(void);
 int notifyAudioPortNegotiationComplete(void);
 void destroyAudioStream(void);
@@ -158,3 +522,15 @@ int stopInputStream(void);
 int initializeMicrophoneStream(void);
 void destroyMicrophoneStream(void);
 int sendMicrophoneData(const char* data, int length);
+
+// Connection functions
+int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION streamConfig, PCONNECTION_LISTENER_CALLBACKS clCallbacks,
+    PDECODER_RENDERER_CALLBACKS drCallbacks, PAUDIO_RENDERER_CALLBACKS arCallbacks, void* renderContext, int drFlags,
+    void* audioContext, int arFlags);
+void LiStopConnectionCtx(PML_CONNECTION_CONTEXT ctx);
+void LiInterruptConnectionCtx(PML_CONNECTION_CONTEXT ctx);
+int performRtspHandshakeCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverInfo);
+char* getSdpPayloadForStreamConfigCtx(PML_CONNECTION_CONTEXT ctx, int rtspClientVersion, int* length);
+
+void LiSetThreadConnectionContext(PML_CONNECTION_CONTEXT ctx);
+PML_CONNECTION_CONTEXT LiGetThreadConnectionContext(void);

@@ -1,6 +1,17 @@
 #include "Limelight-internal.h"
 #include "rs.h"
 
+#ifdef StreamConfig
+#undef StreamConfig
+#endif
+#ifdef ConnectionInterrupted
+#undef ConnectionInterrupted
+#endif
+
+#define AppVersionQuad (queue->depacketizerContext->connectionContext->AppVersionQuad)
+#define StreamConfig (queue->depacketizerContext->connectionContext->StreamConfig)
+#define ConnectionInterrupted (queue->depacketizerContext->connectionContext->ConnectionInterrupted)
+
 #if defined(LC_DEBUG) && !defined(LC_FUZZING)
 // This enables FEC validation mode with a synthetic drop
 // and recovered packet checks vs the original input. It
@@ -16,23 +27,29 @@
 // RTP packets use a 90 KHz presentation timestamp clock
 #define PTS_DIVISOR 90
 
-void RtpvInitializeQueue(PRTP_VIDEO_QUEUE queue) {
+void RtpvInitializeQueue(PRTP_VIDEO_QUEUE queue, PML_DEPACKETIZER_CONTEXT depacketizerContext) {
     reed_solomon_init();
     memset(queue, 0, sizeof(*queue));
 
+    queue->depacketizerContext = depacketizerContext;
     queue->currentFrameNumber = 1;
     queue->multiFecCapable = APP_VERSION_AT_LEAST(7, 1, 431);
 }
 
 static void purgeListEntries(PRTPV_QUEUE_LIST list) {
-    while (list->head != NULL) {
-        PRTPV_QUEUE_ENTRY entry = list->head;
-        list->head = entry->next;
-        free(entry->packet);
-    }
-
+    PRTPV_QUEUE_ENTRY entry = list->head;
+    list->head = NULL;
     list->tail = NULL;
     list->count = 0;
+
+    while (entry != NULL) {
+        PRTPV_QUEUE_ENTRY next = entry->next;
+        if (entry->packet != NULL) {
+            // entry lives inside packet buffer; freeing packet releases entry memory too
+            free(entry->packet);
+        }
+        entry = next;
+    }
 }
 
 void RtpvCleanupQueue(PRTP_VIDEO_QUEUE queue) {
@@ -103,8 +120,8 @@ static void reportFinalFrameFecStatus(PRTP_VIDEO_QUEUE queue) {
     fecStatus.fecPercentage = (uint8_t)queue->fecPercentage;
     fecStatus.multiFecBlockIndex = (uint8_t)queue->multiFecCurrentBlockNumber;
     fecStatus.multiFecBlockCount = (uint8_t)(queue->multiFecLastBlockNumber + 1);
-    
-    connectionSendFrameFecStatus(&fecStatus);
+
+    connectionSendFrameFecStatusCtx(&queue->depacketizerContext->connectionContext->controlContext, &fecStatus);
 }
 
 // newEntry is contained within the packet buffer so we free the whole entry by freeing entry->packet
@@ -214,7 +231,7 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
             // NB: We use totalPackets - neededPackets instead of just bufferParityPackets here because we require
             // one extra parity shard for recovery if we're in FEC validation mode.
             if (queue->missingPackets > totalPackets - neededPackets) {
-                notifyFrameLost(queue->currentFrameNumber, true);
+                notifyFrameLostCtx(queue->depacketizerContext, queue->currentFrameNumber, true);
                 queue->reportedLostFrame = true;
             }
             else {
@@ -531,7 +548,7 @@ static void submitCompletedFrame(PRTP_VIDEO_QUEUE queue) {
 
         // Submit this packet for decoding. It will own freeing the entry now.
         removeEntryFromList(&queue->completedFecBlockList, entry);
-        queueRtpPacket(entry);
+        queueRtpPacketCtx(queue->depacketizerContext, entry);
     }
 }
 
@@ -614,7 +631,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
 
                     // Notify the host of the loss of this frame
                     if (!queue->reportedLostFrame) {
-                        notifyFrameLost(queue->currentFrameNumber, false);
+                        notifyFrameLostCtx(queue->depacketizerContext, queue->currentFrameNumber, false);
                         queue->reportedLostFrame = true;
                     }
 
@@ -650,7 +667,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
 
             // Notify the host of the loss of this frame
             if (!queue->reportedLostFrame) {
-                notifyFrameLost(queue->currentFrameNumber, false);
+                notifyFrameLostCtx(queue->depacketizerContext, queue->currentFrameNumber, false);
                 queue->reportedLostFrame = true;
             }
 
@@ -680,7 +697,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
                 // NB: We only have to notify for the most recent lost frame, since
                 // the depacketizer will report the RFI range starting at the last
                 // frame it saw.
-                notifyFrameLost(nvPacket->frameIndex - 1, false);
+                notifyFrameLostCtx(queue->depacketizerContext, nvPacket->frameIndex - 1, false);
             }
         }
 
@@ -688,8 +705,8 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
 
         // Tell the control stream logic about this frame, even if we don't end up
         // being able to reconstruct a full frame from it.
-        connectionSawFrame(queue->currentFrameNumber);
-        
+        connectionSawFrameCtx(&queue->depacketizerContext->connectionContext->controlContext, queue->currentFrameNumber);
+
         queue->bufferFirstRecvTimeMs = PltGetMillis();
         queue->bufferLowestSequenceNumber = U16(packet->sequenceNumber - fecIndex);
         queue->nextContiguousSequenceNumber = queue->bufferLowestSequenceNumber;
