@@ -99,6 +99,7 @@ static void AudioPingThreadProc(void* context) {
 // Initialize the audio stream and start (context)
 int initializeAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
     ctx->connectionContext = connectionContext;
+    ctx->rtpSocket = INVALID_SOCKET;
     LbqInitializeLinkedBlockingQueue(&ctx->packetQueue, 30);
     RtpaInitializeQueue(&ctx->rtpAudioQueue);
     ctx->lastSeq = 0;

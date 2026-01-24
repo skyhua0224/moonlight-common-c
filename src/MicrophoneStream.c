@@ -37,14 +37,11 @@ int initializeMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, PML_CONNECT
   }
 
   ctx->connectionContext = connectionContext;
+  ctx->micSocket = INVALID_SOCKET;
+  ctx->micEncryptionCtx = NULL;
   ctx->micAddrValid = false;
   ctx->micAddrLen = 0;
   ctx->micPortNumber = 0;
-
-  // 如果已经初始化，直接返回成功
-  if (ctx->micSocket != INVALID_SOCKET) {
-    return 0;
-  }
 
   ctx->micEncryptionCtx = PltCreateCryptoContext();
   if (ctx->micEncryptionCtx == NULL) {

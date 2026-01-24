@@ -311,6 +311,9 @@ static const char* preconstructedPayloadsGen7Enc[] = {
 int initializeControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
     ctx->connectionContext = connectionContext;
     ctx->stopping = false;
+    ctx->ctlSock = INVALID_SOCKET;
+    ctx->client = NULL;
+    ctx->peer = NULL;
     PltCreateEvent(&ctx->idrFrameRequiredEvent);
     LbqInitializeLinkedBlockingQueue(&ctx->invalidReferenceFrameTuples, 20);
     LbqInitializeLinkedBlockingQueue(&ctx->frameFecStatusQueue, 8); // Limits number of frame status reports per periodic ping interval

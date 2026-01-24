@@ -234,6 +234,15 @@ void closeSocket(SOCKET s) {
 #if defined(LC_WINDOWS)
     closesocket(s);
 #else
+    // Guard against closing stdin/stdout/stderr (fd 0, 1, 2) which are
+    // guarded on macOS and will cause EXC_GUARD crashes. This can happen
+    // if a socket field was zeroed via memset instead of being set to
+    // INVALID_SOCKET (-1).
+    if (s >= 0 && s <= 2) {
+        Limelog("BUG: Attempted to close standard fd %d as socket!\n", s);
+        LC_ASSERT(s > 2);
+        return;
+    }
     close(s);
 #endif
 }

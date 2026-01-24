@@ -91,6 +91,8 @@ typedef struct _PACKET_HOLDER {
 // Initializes the input stream
 int initializeInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
   ctx->connectionContext = connectionContext;
+  ctx->inputSock = INVALID_SOCKET;
+  ctx->initialized = false;
   memcpy(ctx->currentAesIv, StreamConfig.remoteInputAesIv, sizeof(ctx->currentAesIv));
 
   // Set a high maximum queue size limit to ensure input isn't dropped
