@@ -283,6 +283,10 @@ typedef struct _ML_MICROPHONE_STREAM_CONTEXT {
     PML_CONNECTION_CONTEXT connectionContext;
     SOCKET micSocket;
     PPLT_CRYPTO_CONTEXT micEncryptionCtx;
+    struct sockaddr_storage micRemoteAddr;
+    SOCKADDR_LEN micAddrLen;
+    uint16_t micPortNumber;
+    bool micAddrValid;
 } ML_MICROPHONE_STREAM_CONTEXT, *PML_MICROPHONE_STREAM_CONTEXT;
 
 int initializeMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext);

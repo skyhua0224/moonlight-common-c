@@ -32,7 +32,14 @@ typedef struct _MICROPHONE_PACKET_HEADER {
 
 // 初始化麦克风流
 int initializeMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
+  if (ctx == NULL || connectionContext == NULL) {
+    return -1;
+  }
+
   ctx->connectionContext = connectionContext;
+  ctx->micAddrValid = false;
+  ctx->micAddrLen = 0;
+  ctx->micPortNumber = 0;
 
   // 如果已经初始化，直接返回成功
   if (ctx->micSocket != INVALID_SOCKET) {
@@ -51,6 +58,14 @@ int initializeMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, PML_CONNECT
     PltDestroyCryptoContext(ctx->micEncryptionCtx);
     ctx->micEncryptionCtx = NULL;
     return LastSocketFail();
+  }
+
+  // Cache address details for mic sends to avoid dereferencing connectionContext later
+  if (AddrLen > 0 && AddrLen <= sizeof(ctx->micRemoteAddr) && RemoteAddr.ss_family != AF_UNSPEC) {
+    memcpy(&ctx->micRemoteAddr, &RemoteAddr, sizeof(ctx->micRemoteAddr));
+    ctx->micAddrLen = AddrLen;
+    ctx->micPortNumber = MicPortNumber;
+    ctx->micAddrValid = true;
   }
 
   return 0;
@@ -75,6 +90,12 @@ void destroyMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx) {
     PltDestroyCryptoContext(ctx->micEncryptionCtx);
     ctx->micEncryptionCtx = NULL;
   }
+
+  ctx->micAddrValid = false;
+  ctx->micAddrLen = 0;
+  ctx->micPortNumber = 0;
+  memset(&ctx->micRemoteAddr, 0, sizeof(ctx->micRemoteAddr));
+  ctx->connectionContext = NULL;
 }
 
 void destroyMicrophoneStream(void) {
@@ -87,14 +108,27 @@ int sendMicrophoneDataCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, const char* data, i
   LC_SOCKADDR saddr;
   ssize_t err;
 
+  if (ctx == NULL || ctx->connectionContext == NULL) {
+    return -1;
+  }
+
+  if (!ctx->micAddrValid || ctx->micAddrLen == 0 || ctx->micAddrLen > sizeof(saddr)) {
+    return -1;
+  }
+
+  if (((struct sockaddr *)&ctx->micRemoteAddr)->sa_family == AF_UNSPEC) {
+    return -1;
+  }
+
   if (ctx->micSocket == INVALID_SOCKET) {
     return -1;
   }
 
-  memcpy(&saddr, &RemoteAddr, sizeof(saddr));
-  SET_PORT(&saddr, MicPortNumber);
+  memset(&saddr, 0, sizeof(saddr));
+  memcpy(&saddr, &ctx->micRemoteAddr, sizeof(saddr));
+  SET_PORT(&saddr, ctx->micPortNumber);
 
-  err = sendto(ctx->micSocket, data, length, 0, (struct sockaddr *)&saddr, AddrLen);
+  err = sendto(ctx->micSocket, data, length, 0, (struct sockaddr *)&saddr, ctx->micAddrLen);
   if (err < 0) {
     return (int)LastSocketError();
   }
