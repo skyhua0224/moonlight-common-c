@@ -5,9 +5,35 @@
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/version.h>
 
-mbedtls_entropy_context EntropyContext;
-mbedtls_ctr_drbg_context CtrDrbgContext;
-bool RandomStateInitialized = false;
+static mbedtls_entropy_context EntropyContext;
+static mbedtls_ctr_drbg_context CtrDrbgContext;
+
+#ifdef LC_WINDOWS
+static INIT_ONCE RandomInitOnce = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK initRandomStateCallback(PINIT_ONCE initOnce, PVOID parameter, PVOID* context) {
+    (void)initOnce;
+    (void)parameter;
+    (void)context;
+    mbedtls_entropy_init(&EntropyContext);
+    mbedtls_ctr_drbg_init(&CtrDrbgContext);
+    if (mbedtls_ctr_drbg_seed(&CtrDrbgContext, mbedtls_entropy_func, &EntropyContext, NULL, 0) != 0) {
+        Limelog("Seeding MbedTLS random number generator failed!\n");
+        LC_ASSERT(false);
+        return FALSE;
+    }
+    return TRUE;
+}
+#else
+static pthread_once_t RandomInitOnce = PTHREAD_ONCE_INIT;
+static void initRandomState(void) {
+    mbedtls_entropy_init(&EntropyContext);
+    mbedtls_ctr_drbg_init(&CtrDrbgContext);
+    if (mbedtls_ctr_drbg_seed(&CtrDrbgContext, mbedtls_entropy_func, &EntropyContext, NULL, 0) != 0) {
+        Limelog("Seeding MbedTLS random number generator failed!\n");
+        LC_ASSERT(false);
+    }
+}
+#endif
 
 #if MBEDTLS_VERSION_MAJOR > 2 || (MBEDTLS_VERSION_MAJOR == 2 && MBEDTLS_VERSION_MINOR >= 25)
 #define USE_MBEDTLS_CRYPTO_EXT
@@ -439,6 +465,9 @@ PPLT_CRYPTO_CONTEXT PltCreateCryptoContext(void) {
 }
 
 void PltDestroyCryptoContext(PPLT_CRYPTO_CONTEXT ctx) {
+    if (ctx == NULL) {
+        return;
+    }
 #ifdef USE_MBEDTLS
     mbedtls_cipher_free(&ctx->ctx);
 #else
@@ -449,19 +478,12 @@ void PltDestroyCryptoContext(PPLT_CRYPTO_CONTEXT ctx) {
 
 void PltGenerateRandomData(unsigned char* data, int length) {
 #ifdef USE_MBEDTLS
-    // FIXME: This is not thread safe...
-    if (!RandomStateInitialized) {
-        mbedtls_entropy_init(&EntropyContext);
-        mbedtls_ctr_drbg_init(&CtrDrbgContext);
-        if (mbedtls_ctr_drbg_seed(&CtrDrbgContext, mbedtls_entropy_func, &EntropyContext, NULL, 0) != 0) {
-            // Nothing we can really do here...
-            Limelog("Seeding MbedTLS random number generator failed!\n");
-            LC_ASSERT(false);
-            return;
-        }
-
-        RandomStateInitialized = true;
-    }
+    // Thread-safe one-time initialization using pthread_once/InitOnceExecuteOnce
+#ifdef LC_WINDOWS
+    InitOnceExecuteOnce(&RandomInitOnce, initRandomStateCallback, NULL, NULL);
+#else
+    pthread_once(&RandomInitOnce, initRandomState);
+#endif
 
     mbedtls_ctr_drbg_random(&CtrDrbgContext, data, length);
 #else
