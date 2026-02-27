@@ -224,3 +224,5 @@ typedef struct _SS_MICROPHONE_PACKET {
 int initializeMicrophoneStream(void);
 void destroyMicrophoneStream(void);
 int sendMicrophoneData(const char *data, int length);
+int sendMicrophoneOpusData(const unsigned char* opusData, int opusLength);
+bool isMicrophoneEncryptionEnabled(void);

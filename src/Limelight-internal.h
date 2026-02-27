@@ -26,6 +26,12 @@ extern int AppVersionQuad[4];
 #define SS_ENC_CONTROL_V2 0x01
 #define SS_ENC_VIDEO 0x02
 #define SS_ENC_AUDIO 0x04
+#define SS_ENC_MICROPHONE 0x08
+
+// Microphone RTP stream values
+#define MIC_PACKET_MAGIC 0x12345678
+#define MIC_PACKET_TYPE_OPUS 0x61
+#define MAX_MIC_PACKET_SIZE 1400
 
 
 // ENet channel ID values
@@ -283,6 +289,8 @@ typedef struct _ML_MICROPHONE_STREAM_CONTEXT {
     PML_CONNECTION_CONTEXT connectionContext;
     SOCKET micSocket;
     PPLT_CRYPTO_CONTEXT micEncryptionCtx;
+    uint32_t micRiKeyId;
+    uint16_t micSequenceNumber;
     struct sockaddr_storage micRemoteAddr;
     SOCKADDR_LEN micAddrLen;
     uint16_t micPortNumber;
@@ -292,6 +300,7 @@ typedef struct _ML_MICROPHONE_STREAM_CONTEXT {
 int initializeMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext);
 void destroyMicrophoneStreamCtx(PML_MICROPHONE_STREAM_CONTEXT ctx);
 int sendMicrophoneDataCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, const char* data, int length);
+int sendMicrophoneOpusDataCtx(PML_MICROPHONE_STREAM_CONTEXT ctx, const unsigned char* opusData, int opusLength);
 
 // Input stream context (multi-stream scaffolding)
 typedef struct _ML_INPUT_STREAM_CONTEXT {
@@ -541,6 +550,8 @@ int stopInputStream(void);
 int initializeMicrophoneStream(void);
 void destroyMicrophoneStream(void);
 int sendMicrophoneData(const char* data, int length);
+int sendMicrophoneOpusData(const unsigned char* opusData, int opusLength);
+bool isMicrophoneEncryptionEnabled(void);
 
 // Connection functions
 int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverInfo, PSTREAM_CONFIGURATION streamConfig, PCONNECTION_LISTENER_CALLBACKS clCallbacks,

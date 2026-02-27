@@ -956,6 +956,8 @@ int LiSendMicrophoneControl(uint8_t control, int sampleRate, int channelCount,
 int initializeMicrophoneStream(void);
 void destroyMicrophoneStream(void);
 int sendMicrophoneData(const char *data, int length);
+int sendMicrophoneOpusData(const unsigned char* opusData, int opusLength);
+bool isMicrophoneEncryptionEnabled(void);
 int LiSendHighResHScrollEvent(short scrollAmount);
 
 // This function returns a time in milliseconds with an implementation-defined
