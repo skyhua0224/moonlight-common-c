@@ -425,7 +425,7 @@ static void AudioReceiveThreadProc(void* context) {
                         free(queuedPacket);
                     }
                 }
-                
+
                 // Break on exit
                 if (queuedPacket != NULL) {
                     break;
@@ -433,7 +433,7 @@ static void AudioReceiveThreadProc(void* context) {
             }
         }
     }
-    
+
     if (packet != NULL) {
         free(packet);
     }
@@ -557,4 +557,8 @@ int LiGetPendingAudioDurationCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
 int LiGetPendingAudioDuration(void) {
     PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
     return LiGetPendingAudioDurationCtx(&ctx->audioContext);
+}
+
+const RTP_AUDIO_STATS* LiGetRTPAudioStats(void) {
+    return &rtpAudioQueue.stats;
 }

@@ -6,8 +6,9 @@ typedef struct _RTPV_QUEUE_ENTRY {
     struct _RTPV_QUEUE_ENTRY* next;
     struct _RTPV_QUEUE_ENTRY* prev;
     PRTP_PACKET packet;
-    uint64_t receiveTimeMs;
-    uint32_t presentationTimeMs;
+    uint64_t receiveTimeUs;
+    uint64_t presentationTimeUs;
+    uint32_t rtpTimestamp;
     int length;
     bool isParity;
 } RTPV_QUEUE_ENTRY, *PRTPV_QUEUE_ENTRY;
@@ -22,7 +23,7 @@ typedef struct _RTP_VIDEO_QUEUE {
     RTPV_QUEUE_LIST pendingFecBlockList;
     RTPV_QUEUE_LIST completedFecBlockList;
 
-    uint64_t bufferFirstRecvTimeMs;
+    uint64_t bufferFirstRecvTimeUs;
     uint32_t bufferLowestSequenceNumber;
     uint32_t bufferHighestSequenceNumber;
     uint32_t bufferFirstParitySequenceNumber;
@@ -43,7 +44,7 @@ typedef struct _RTP_VIDEO_QUEUE {
     uint8_t multiFecCurrentBlockNumber;
     uint8_t multiFecLastBlockNumber;
 
-    uint32_t lastOosFramePresentationTimestamp;
+    uint64_t lastOosFramePresentationTimestamp;
     bool receivedOosData;
 
     PML_DEPACKETIZER_CONTEXT depacketizerContext;

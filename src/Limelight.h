@@ -404,7 +404,8 @@ void LiInitializeAudioCallbacks(PAUDIO_RENDERER_CALLBACKS arCallbacks);
 #define STAGE_VIDEO_STREAM_START 9
 #define STAGE_AUDIO_STREAM_START 10
 #define STAGE_INPUT_STREAM_START 11
-#define STAGE_MAX 12
+#define STAGE_MICROPHONE_STREAM_INIT 12
+#define STAGE_MAX 13
 
 // This callback is invoked to indicate that a stage of initialization is about
 // to begin
@@ -520,6 +521,11 @@ typedef void (*ConnListenerSetAdaptiveTriggers)(uint16_t controllerNumber,
 // This callback is invoked to set a controller's RGB LED (if present).
 typedef void (*ConnListenerSetControllerLED)(uint16_t controllerNumber,
                                              uint8_t r, uint8_t g, uint8_t b);
+
+// This callback is invoked to notify the client of a resolution change on the host
+// (e.g., when the host screen is rotated). The client should update the stream
+// resolution accordingly.
+typedef void(*ConnListenerResolutionChanged)(uint32_t width, uint32_t height);
 
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
   ConnListenerStageStarting stageStarting;

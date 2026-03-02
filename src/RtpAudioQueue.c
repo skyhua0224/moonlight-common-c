@@ -492,6 +492,7 @@ static bool completeFecBlock(PRTP_AUDIO_QUEUE queue, PRTPA_FEC_BLOCK block) {
             block->fecHeader.baseSequenceNumber);
   }
 #endif
+    }
 
 #ifdef FEC_VALIDATION_MODE
   // Check the RTP header values

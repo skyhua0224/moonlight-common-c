@@ -173,7 +173,8 @@ static const char* stageNames[STAGE_MAX] = {
     "control stream establishment",
     "video stream establishment",
     "audio stream establishment",
-    "input stream establishment"
+    "input stream establishment",
+    "microphone stream initialization"
 };
 
 // Get the name of the current stage based on its number

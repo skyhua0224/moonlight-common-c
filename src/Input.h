@@ -195,15 +195,18 @@ typedef struct _SS_CONTROLLER_BATTERY_PACKET {
   uint8_t zero[1]; // Alignment/reserved
 } SS_CONTROLLER_BATTERY_PACKET, *PSS_CONTROLLER_BATTERY_PACKET;
 
-// 麦克风相关定义
-#define SS_MICROPHONE_MAGIC 0x55000008
-#define MIC_PACKET_MAGIC 0x12345678
+// ============================================================================
+// Reserved interfaces for future microphone control via Input Stream
+// Currently microphone is controlled via RTSP SETUP/PLAY, not Input Stream.
+// These definitions are kept for protocol reference (Sunshine compatibility).
+// ============================================================================
 
-// 麦克风流控制命令
+// Microphone control command magic (send via Input Stream, not implemented)
+#define SS_MICROPHONE_MAGIC 0x55000008
 #define MIC_CONTROL_START 0x01
 #define MIC_CONTROL_STOP 0x02
 
-// 麦克风流配置
+// Dynamic microphone configuration (for example, sample rate: 48kHz, channel count: 1, opus bitrate: 64kbps)
 typedef struct _MIC_STREAM_CONFIGURATION {
   int sampleRate;
   int channelCount;

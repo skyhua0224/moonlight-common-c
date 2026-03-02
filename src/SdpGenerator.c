@@ -355,6 +355,15 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
             EncryptionFeaturesEnabled |= SS_ENC_AUDIO;
         }
 
+        // If microphone encryption is supported by the host, enable it
+        // Microphone encryption follows audio encryption - if audio is encrypted, mic should be too
+        if (EncryptionFeaturesSupported & SS_ENC_MICROPHONE) {
+            // Enable mic encryption if audio encryption is enabled or if host explicitly requests it
+            if ((EncryptionFeaturesEnabled & SS_ENC_AUDIO) || (EncryptionFeaturesRequested & SS_ENC_MICROPHONE)) {
+                EncryptionFeaturesEnabled |= SS_ENC_MICROPHONE;
+            }
+        }
+
         snprintf(payloadStr, sizeof(payloadStr), "%u", EncryptionFeaturesEnabled);
         err |= addAttributeString(&optionHead, "x-ss-general.encryptionEnabled", payloadStr);
 
@@ -508,8 +517,19 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
 
         if (AppVersionQuad[0] >= 7) {
             // Enable HDR if requested
+            // dynamicRangeMode: 0 = SDR, 1 = HDR10/PQ, 2 = HLG
             if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_10BIT) {
-                err |= addAttributeString(&optionHead, "x-nv-video[0].dynamicRangeMode", "1");
+                // Use the hdrMode from StreamConfig to determine the exact HDR type
+                // This allows the client to request HLG (mode 2) if supported
+                char hdrModeStr[2];
+                if (StreamConfig.hdrMode == 2) {
+                    // HLG mode requested
+                    snprintf(hdrModeStr, sizeof(hdrModeStr), "2");
+                } else {
+                    // Default to HDR10/PQ (mode 1) for HDR content
+                    snprintf(hdrModeStr, sizeof(hdrModeStr), "1");
+                }
+                err |= addAttributeString(&optionHead, "x-nv-video[0].dynamicRangeMode", hdrModeStr);
             }
             else {
                 err |= addAttributeString(&optionHead, "x-nv-video[0].dynamicRangeMode", "0");

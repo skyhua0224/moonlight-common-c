@@ -45,11 +45,10 @@
 // Matches Win32 WHEEL_DELTA definition
 #define LI_WHEEL_DELTA 120
 
-// If we try to send more than one gamepad or mouse motion event
+// If we try to send more than one stylus or mouse motion event
 // per millisecond, we'll wait a little bit to try to batch with
 // the next one. This batching wait paradoxically _decreases_
 // effective input latency by avoiding packet queuing in ENet.
-#define CONTROLLER_BATCHING_INTERVAL_MS 1
 #define MOUSE_BATCHING_INTERVAL_MS 1
 #define PEN_BATCHING_INTERVAL_MS 1
 
@@ -87,6 +86,22 @@ typedef struct _PACKET_HOLDER {
     NV_UNICODE_PACKET unicode;
   } packet;
 } PACKET_HOLDER, *PPACKET_HOLDER;
+
+static PLT_MUTEX batchedInputMutex;
+static PPACKET_HOLDER currentQueuedControllerPacket[MAX_GAMEPADS];
+static struct {
+    float x, y, z;
+    bool dirty; // Update ready to send (queued packet holder in packetQueue)
+} currentGamepadSensorState[MAX_GAMEPADS][MAX_MOTION_EVENTS];
+static struct {
+    int deltaX, deltaY;
+    bool dirty; // Update ready to send (queued packet holder in packetQueue)
+} currentRelativeMouseState;
+static struct {
+    int x, y;
+    int width, height;
+    bool dirty; // Update ready to send (queued packet holder in packetQueue)
+} currentAbsoluteMouseState;
 
 // Initializes the input stream
 int initializeInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
