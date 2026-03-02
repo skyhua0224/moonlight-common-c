@@ -1,5 +1,5 @@
 #include "Limelight-internal.h"
-#include "rswrapper.h"
+#include "rs.h"
 
 #ifdef StreamConfig
 #undef StreamConfig
@@ -22,7 +22,7 @@
 
 // Don't try speculative RFI for 5 minutes after seeing
 // an out of order packet or incorrect prediction
-#define SPECULATIVE_RFI_COOLDOWN_PERIOD_US 300000000
+#define SPECULATIVE_RFI_COOLDOWN_PERIOD_MS 300000
 
 // RTP packets use a 90 KHz presentation timestamp clock
 #define PTS_DIVISOR 90
@@ -108,7 +108,7 @@ static void removeEntryFromList(PRTPV_QUEUE_LIST list, PRTPV_QUEUE_ENTRY entry) 
 
 static void reportFinalFrameFecStatus(PRTP_VIDEO_QUEUE queue) {
     SS_FRAME_FEC_STATUS fecStatus;
-
+    
     fecStatus.frameIndex = BE32(queue->currentFrameNumber);
     fecStatus.highestReceivedSequenceNumber = BE16(queue->receivedHighestSequenceNumber);
     fecStatus.nextContiguousSequenceNumber = BE16(queue->nextContiguousSequenceNumber);
@@ -128,7 +128,7 @@ static void reportFinalFrameFecStatus(PRTP_VIDEO_QUEUE queue) {
 static bool queuePacket(PRTP_VIDEO_QUEUE queue, PRTPV_QUEUE_ENTRY newEntry, PRTP_PACKET packet, int length, bool isParity, bool isFecRecovery) {
     PRTPV_QUEUE_ENTRY entry;
     bool outOfSequence;
-
+    
     LC_ASSERT(!(isFecRecovery && isParity));
     LC_ASSERT(!isBefore16(packet->sequenceNumber, queue->nextContiguousSequenceNumber));
 
@@ -171,22 +171,21 @@ static bool queuePacket(PRTP_VIDEO_QUEUE queue, PRTPV_QUEUE_ENTRY newEntry, PRTP
     newEntry->isParity = isParity;
     newEntry->prev = NULL;
     newEntry->next = NULL;
-    newEntry->presentationTimeUs = ((uint64_t)packet->timestamp * 1000) / PTS_DIVISOR;
-    newEntry->rtpTimestamp = packet->timestamp;
+    newEntry->presentationTimeMs = packet->timestamp / PTS_DIVISOR;
 
     // FEC recovery packets are synthesized by us, so don't use them to determine OOS data
     if (!isFecRecovery) {
         if (outOfSequence) {
             // This packet was received after a higher sequence number packet, so note that we
             // received an out of order packet to disable our speculative RFI recovery logic.
-            queue->lastOosFramePresentationTimestamp = newEntry->presentationTimeUs;
+            queue->lastOosFramePresentationTimestamp = newEntry->presentationTimeMs;
             if (!queue->receivedOosData) {
                 Limelog("Leaving speculative RFI mode after OOS video data at frame %u\n",
                         queue->currentFrameNumber);
                 queue->receivedOosData = true;
             }
         }
-        else if (queue->receivedOosData && newEntry->presentationTimeUs > queue->lastOosFramePresentationTimestamp + SPECULATIVE_RFI_COOLDOWN_PERIOD_US) {
+        else if (queue->receivedOosData && newEntry->presentationTimeMs > queue->lastOosFramePresentationTimestamp + SPECULATIVE_RFI_COOLDOWN_PERIOD_MS) {
             Limelog("Entering speculative RFI mode after sequenced video data at frame %u\n",
                     queue->currentFrameNumber);
             queue->receivedOosData = false;
@@ -213,7 +212,7 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
     int ret;
 
     LC_ASSERT(totalPackets == U16(queue->bufferHighestSequenceNumber - queue->bufferLowestSequenceNumber) + 1U);
-
+    
 #ifdef FEC_VALIDATION_MODE
     // We'll need an extra packet to run in FEC validation mode, because we will
     // be "dropping" one below and recovering it using parity. However, some frames
@@ -252,7 +251,7 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
     if (queue->reportedLostFrame && !queue->receivedOosData) {
         // If it turns out that we lied to the host, stop further speculative RFI requests for a while.
         queue->receivedOosData = true;
-        queue->lastOosFramePresentationTimestamp = queue->pendingFecBlockList.head->presentationTimeUs;
+        queue->lastOosFramePresentationTimestamp = queue->pendingFecBlockList.head->presentationTimeMs;
         Limelog("Leaving speculative RFI mode due to incorrect loss prediction of frame %u\n", queue->currentFrameNumber);
     }
 
@@ -281,9 +280,9 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
         ret = -2;
         goto cleanup;
     }
-
+    
     rs = reed_solomon_new(queue->bufferDataPackets, queue->bufferParityPackets);
-
+    
     // This could happen in an OOM condition, but it could also mean the FEC data
     // that we fed to reed_solomon_new() is bogus, so we'll assert to get a better look.
     LC_ASSERT(rs != NULL);
@@ -291,9 +290,9 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
         ret = -3;
         goto cleanup;
     }
-
+    
     memset(marks, 1, sizeof(char) * (totalPackets));
-
+    
     int receiveSize = StreamConfig.packetSize + MAX_RTP_HEADER_SIZE;
     int packetBufferSize = receiveSize + sizeof(RTPV_QUEUE_ENTRY);
 
@@ -325,7 +324,7 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
 
         packets[index] = (unsigned char*) entry->packet;
         marks[index] = 0;
-
+        
         //Set padding to zero
         if (entry->length < receiveSize) {
             memset(&packets[index][entry->length], 0, receiveSize - entry->length);
@@ -344,9 +343,9 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
             }
         }
     }
-
-    ret = reed_solomon_decode(rs, packets, marks, totalPackets, receiveSize);
-
+    
+    ret = reed_solomon_reconstruct(rs, packets, marks, totalPackets, receiveSize);
+    
     // We should always provide enough parity to recover the missing data successfully.
     // If this fails, something is probably wrong with our FEC state.
     LC_ASSERT(ret == 0);
@@ -357,7 +356,7 @@ static int reconstructFrame(PRTP_VIDEO_QUEUE queue) {
                 queue->bufferDataPackets - queue->receivedDataPackets,
                 queue->currentFrameNumber);
 #endif
-
+        
         // Report the final FEC status if we needed to perform a recovery
         reportFinalFrameFecStatus(queue);
     }
@@ -373,7 +372,7 @@ cleanup_packets:
                 rtpPacket->header = queue->pendingFecBlockList.head->packet->header;
                 rtpPacket->timestamp = queue->pendingFecBlockList.head->packet->timestamp;
                 rtpPacket->ssrc = queue->pendingFecBlockList.head->packet->ssrc;
-
+                
                 int dataOffset = sizeof(*rtpPacket);
                 if (rtpPacket->header & FLAG_EXTENSION) {
                     dataOffset += 4; // 2 additional fields
@@ -399,9 +398,9 @@ cleanup_packets:
 
                     // Check all NV_VIDEO_PACKET fields except FEC stuff which differs in the recovered packet
                     LC_ASSERT_VT(nvPacket->flags == droppedNvPacket->flags);
-                    LC_ASSERT_VT(nvPacket->extraFlags == droppedNvPacket->extraFlags);
                     LC_ASSERT_VT(nvPacket->frameIndex == droppedNvPacket->frameIndex);
                     LC_ASSERT_VT(nvPacket->streamPacketIndex == droppedNvPacket->streamPacketIndex);
+                    LC_ASSERT_VT(nvPacket->reserved == droppedNvPacket->reserved);
                     LC_ASSERT_VT(!queue->multiFecCapable || nvPacket->multiFecBlocks == droppedNvPacket->multiFecBlocks);
 
                     // Check the data itself - use memcmp() and only loop if an error is detected
@@ -475,7 +474,7 @@ cleanup:
 
     if (marks != NULL)
         free(marks);
-
+    
     return ret;
 }
 
@@ -515,8 +514,8 @@ static void stageCompleteFecBlock(PRTP_VIDEO_QUEUE queue) {
                 // and use the first packet's receive time for all packets. This ends up
                 // actually being better for the measurements that the depacketizer does,
                 // since it properly handles out of order packets.
-                LC_ASSERT(queue->bufferFirstRecvTimeUs != 0);
-                entry->receiveTimeUs = queue->bufferFirstRecvTimeUs;
+                LC_ASSERT(queue->bufferFirstRecvTimeMs != 0);
+                entry->receiveTimeMs = queue->bufferFirstRecvTimeMs;
 
                 // Move this packet to the completed FEC block list
                 insertEntryIntoList(&queue->completedFecBlockList, entry);
@@ -649,7 +648,7 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
                         queue->bufferDataPackets);
             }
         }
-
+        
         // We must either start on the current FEC block number for the current frame,
         // or block 0 of a new frame.
         uint8_t expectedFecBlockNumber = (queue->currentFrameNumber == nvPacket->frameIndex ? queue->multiFecCurrentBlockNumber : 0);
@@ -724,9 +723,6 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
         queue->bufferHighestSequenceNumber = U16(queue->bufferFirstParitySequenceNumber + queue->bufferParityPackets - 1);
         queue->multiFecCurrentBlockNumber = fecCurrentBlockNumber;
         queue->multiFecLastBlockNumber = (nvPacket->multiFecBlocks >> 6) & 0x3;
-
-        queue->stats.packetCountVideo += queue->bufferDataPackets;
-        queue->stats.packetCountFec += queue->bufferParityPackets;
     }
 
     // Reject packets above our FEC queue valid sequence number range
@@ -783,18 +779,18 @@ int RtpvAddPacket(PRTP_VIDEO_QUEUE queue, PRTP_PACKET packet, int length, PRTPV_
             queue->receivedParityPackets++;
             LC_ASSERT(queue->receivedParityPackets <= queue->bufferParityPackets);
         }
-
+        
         // Try to submit this frame. If we haven't received enough packets,
         // this will fail and we'll keep waiting.
         if (reconstructFrame(queue) == 0) {
             // Stage the complete FEC block for use once reassembly is complete
             stageCompleteFecBlock(queue);
-
+            
             // stageCompleteFecBlock() should have consumed all pending FEC data
             LC_ASSERT(queue->pendingFecBlockList.head == NULL);
             LC_ASSERT(queue->pendingFecBlockList.tail == NULL);
             LC_ASSERT(queue->pendingFecBlockList.count == 0);
-
+            
             // If we're not yet at the last FEC block for this frame, move on to the next block.
             // Otherwise, the frame is complete and we can move on to the next frame.
             if (queue->multiFecCurrentBlockNumber < queue->multiFecLastBlockNumber) {

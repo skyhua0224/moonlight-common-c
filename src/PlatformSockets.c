@@ -301,6 +301,9 @@ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCK
     LC_SOCKADDR bindAddr;
     int err;
     int requestedBufferSize = bufferSize;
+#if !defined(LC_DEBUG)
+    (void)requestedBufferSize;
+#endif
 
     s = createSocket(addressFamily, SOCK_DGRAM, IPPROTO_UDP, false);
     if (s == INVALID_SOCKET) {

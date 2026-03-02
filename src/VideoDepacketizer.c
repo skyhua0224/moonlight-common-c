@@ -113,7 +113,6 @@ void initializeVideoDepacketizerCtx(PML_DEPACKETIZER_CONTEXT ctx, PML_CONNECTION
     ctx->frameHostProcessingLatency = 0;
     firstPacketReceiveTime = 0;
     firstPacketPresentationTime = 0;
-    firstPacketRtpTimestamp = 0;
     lastPacketPayloadLength = 0;
     dropStatePending = false;
     idrFrameProcessed = false;
@@ -837,7 +836,6 @@ static void processRtpPayload(PML_DEPACKETIZER_CONTEXT ctx, PNV_VIDEO_PACKET vid
     BUFFER_DESC currentPos;
     uint32_t frameIndex;
     uint8_t flags;
-    uint8_t extraFlags;
     bool firstPacket, lastPacket;
     uint32_t streamPacketIndex;
     uint8_t fecCurrentBlockNumber;
@@ -855,7 +853,6 @@ static void processRtpPayload(PML_DEPACKETIZER_CONTEXT ctx, PNV_VIDEO_PACKET vid
     fecLastBlockNumber = (videoPacket->multiFecBlocks >> 6) & 0x3;
     frameIndex = videoPacket->frameIndex;
     flags = videoPacket->flags;
-    extraFlags = videoPacket->extraFlags;
     firstPacket = isFirstPacket(flags, fecCurrentBlockNumber);
     lastPacket = (flags & FLAG_EOF) && fecCurrentBlockNumber == fecLastBlockNumber;
 
@@ -921,18 +918,16 @@ static void processRtpPayload(PML_DEPACKETIZER_CONTEXT ctx, PNV_VIDEO_PACKET vid
 
         // Some versions of Sunshine don't send a valid PTS, so we will
         // synthesize one using the receive time as the time base.
-        if (!syntheticPtsBaseUs) {
-            syntheticPtsBaseUs = receiveTimeUs;
+        if (!syntheticPtsBase) {
+            syntheticPtsBase = receiveTimeMs;
         }
 
         if (!presentationTimeMs && frameIndex > 0) {
             firstPacketPresentationTime = (unsigned int)(receiveTimeMs - syntheticPtsBase);
         }
         else {
-            firstPacketPresentationTime = presentationTimeUs;
+            firstPacketPresentationTime = presentationTimeMs;
         }
-
-        firstPacketRtpTimestamp = rtpTimestamp;
     }
 
     lastPacketInStream = streamPacketIndex;
@@ -1255,7 +1250,7 @@ void queueRtpPacketCtx(PML_DEPACKETIZER_CONTEXT ctx, PRTPV_QUEUE_ENTRY queueEntr
     RTPV_QUEUE_ENTRY queueEntry = *queueEntryPtr;
 
     LC_ASSERT(!queueEntry.isParity);
-    LC_ASSERT(queueEntry.receiveTimeUs != 0);
+    LC_ASSERT(queueEntry.receiveTimeMs != 0);
 
     dataOffset = sizeof(*queueEntry.packet);
     if (queueEntry.packet->header & FLAG_EXTENSION) {
@@ -1274,9 +1269,8 @@ void queueRtpPacketCtx(PML_DEPACKETIZER_CONTEXT ctx, PRTPV_QUEUE_ENTRY queueEntr
 
     processRtpPayload(ctx, (PNV_VIDEO_PACKET)(((char*)queueEntry.packet) + dataOffset),
                       queueEntry.length - dataOffset,
-                      queueEntry.receiveTimeUs,
-                      queueEntry.presentationTimeUs,
-                      queueEntry.rtpTimestamp,
+                      queueEntry.receiveTimeMs,
+                      queueEntry.presentationTimeMs,
                       &existingEntry);
 
     if (existingEntry != NULL) {

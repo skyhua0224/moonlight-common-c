@@ -34,14 +34,9 @@ extern int AppVersionQuad[4];
 #define MAX_MIC_PACKET_SIZE 1400
 
 
-// Microphone RTP stream values
-#define MIC_PACKET_MAGIC 0x12345678
-#define MIC_PACKET_TYPE_OPUS 0x61
-#define MAX_MIC_PACKET_SIZE 1400
-
 // ENet channel ID values
 #define CTRL_CHANNEL_GENERIC      0x00
-#define CTRL_CHANNEL_URGENT       0x01 // IDR, LTR ACK and RFI
+#define CTRL_CHANNEL_URGENT       0x01 // IDR and reference frame invalidation requests
 #define CTRL_CHANNEL_KEYBOARD     0x02
 #define CTRL_CHANNEL_MOUSE        0x03
 #define CTRL_CHANNEL_PEN          0x04
@@ -114,7 +109,7 @@ int startControlStream(void);
 int stopControlStream(void);
 void destroyControlStream(void);
 void connectionDetectedFrameLoss(uint32_t startFrame, uint32_t endFrame);
-void connectionReceivedCompleteFrame(uint32_t frameIndex, bool frameIsLTR);
+void connectionReceivedCompleteFrame(uint32_t frameIndex);
 void connectionSawFrame(uint32_t frameIndex);
 void connectionSendFrameFecStatus(PSS_FRAME_FEC_STATUS fecStatus);
 int sendInputPacketOnControlStream(unsigned char* data, int length, uint8_t channelId, uint32_t flags, bool moreData);
@@ -551,6 +546,7 @@ void destroyInputStream(void);
 int startInputStream(void);
 int stopInputStream(void);
 
+// 麦克风流函数声明
 int initializeMicrophoneStream(void);
 void destroyMicrophoneStream(void);
 int sendMicrophoneData(const char* data, int length);
