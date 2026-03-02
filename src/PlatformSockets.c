@@ -300,6 +300,7 @@ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCK
     SOCKET s;
     LC_SOCKADDR bindAddr;
     int err;
+    int requestedBufferSize = bufferSize;
 
     s = createSocket(addressFamily, SOCK_DGRAM, IPPROTO_UDP, false);
     if (s == INVALID_SOCKET) {
@@ -396,7 +397,7 @@ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCK
 
 #if defined(LC_DEBUG)
         if (err == 0) {
-            Limelog("Selected receive buffer size: %d\n", bufferSize);
+            Limelog("Selected receive buffer size: %d (requested=%d)\n", bufferSize, requestedBufferSize);
         }
         else {
             Limelog("Unable to set receive buffer size: %d\n", LastSocketError());
@@ -406,6 +407,11 @@ SOCKET bindUdpSocket(int addressFamily, struct sockaddr_storage* localAddr, SOCK
             SOCKADDR_LEN len = sizeof(bufferSize);
             if (getsockopt(s, SOL_SOCKET, SO_RCVBUF, (char*)&bufferSize, &len) == 0) {
                 Limelog("Actual receive buffer size: %d\n", bufferSize);
+                if (requestedBufferSize > 0 && bufferSize < requestedBufferSize) {
+                    Limelog("Receive buffer clamped by OS: actual=%d requested=%d\n",
+                            bufferSize,
+                            requestedBufferSize);
+                }
             }
         }
 #endif

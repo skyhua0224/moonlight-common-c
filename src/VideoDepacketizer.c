@@ -79,7 +79,28 @@ typedef struct _LENTRY_INTERNAL {
 // Init
 void initializeVideoDepacketizerCtx(PML_DEPACKETIZER_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext, int pktSize) {
     ctx->connectionContext = connectionContext;
-    LbqInitializeLinkedBlockingQueue(&decodeUnitQueue, 15);
+    int decodeQueueBound = 15;
+    if ((VideoCallbacks.capabilities & CAPABILITY_PULL_RENDERER) != 0) {
+        // Pull-renderer mode relies on the render loop to drain decode units.
+        // At high FPS over remote links, short scheduling pauses can overflow
+        // the default queue too easily and trigger unnecessary IDR recovery.
+        if (StreamConfig.fps >= 120) {
+            decodeQueueBound = 90;
+        }
+        else if (StreamConfig.fps >= 90) {
+            decodeQueueBound = 60;
+        }
+        else {
+            decodeQueueBound = 30;
+        }
+    }
+    LbqInitializeLinkedBlockingQueue(&decodeUnitQueue, decodeQueueBound);
+#if defined(LC_DEBUG)
+    Limelog("Video decode queue bound: %d (pull=%d fps=%d)\n",
+            decodeQueueBound,
+            (VideoCallbacks.capabilities & CAPABILITY_PULL_RENDERER) != 0 ? 1 : 0,
+            StreamConfig.fps);
+#endif
 
     nextFrameNumber = 1;
     startFrameNumber = 0;

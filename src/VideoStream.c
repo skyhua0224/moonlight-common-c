@@ -53,14 +53,12 @@
 // the RTP queue will wait for missing/reordered packets.
 #define RTP_QUEUE_DELAY 10
 
-// This is the desired number of video packets that can be
-// stored in the socket's receive buffer. 2048 is chosen
-// because it should be large enough for all reasonable
-// frame sizes (probably 2 or 3 frames) without using too
-// much kernel memory with larger packet sizes. It also
-// can smooth over transient pauses in network traffic
-// and subsequent packet/frame bursts that follow.
-#define RTP_RECV_PACKETS_BUFFERED 2048
+// Desired number of video packets in the socket receive buffer.
+// Increase this for remote/high-FPS sessions to better tolerate
+// bursty delivery from tunnel/VPN paths.
+#define RTP_RECV_PACKETS_BUFFERED_BASE 2048
+#define RTP_RECV_PACKETS_BUFFERED_REMOTE 4096
+#define RTP_RECV_PACKETS_BUFFERED_HIGH_FPS 6144
 
 // Initialize the video stream (context)
 void initializeVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
@@ -386,6 +384,8 @@ void stopVideoStream(void) {
 // Start the video stream (context)
 int startVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, void* rendererContext, int drFlags) {
     int err;
+    int recvPacketsBuffered;
+    int recvBufferBytes;
 
     LiSetThreadConnectionContext(ctx->connectionContext);
 
@@ -400,8 +400,24 @@ int startVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, void* rendererContext, int
         return err;
     }
 
+    recvPacketsBuffered = RTP_RECV_PACKETS_BUFFERED_BASE;
+    if (StreamConfig.streamingRemotely == STREAM_CFG_REMOTE) {
+        recvPacketsBuffered = RTP_RECV_PACKETS_BUFFERED_REMOTE;
+    }
+    if (StreamConfig.fps >= 120 && recvPacketsBuffered < RTP_RECV_PACKETS_BUFFERED_HIGH_FPS) {
+        recvPacketsBuffered = RTP_RECV_PACKETS_BUFFERED_HIGH_FPS;
+    }
+    recvBufferBytes = recvPacketsBuffered * (StreamConfig.packetSize + MAX_RTP_HEADER_SIZE);
+
+    Limelog("Video recv buffer target: packets=%d bytes=%d remote=%d fps=%d pkt=%d\n",
+            recvPacketsBuffered,
+            recvBufferBytes,
+            StreamConfig.streamingRemotely == STREAM_CFG_REMOTE ? 1 : 0,
+            StreamConfig.fps,
+            StreamConfig.packetSize);
+
     ctx->rtpSocket = bindUdpSocket(RemoteAddr.ss_family, &LocalAddr, AddrLen,
-                              RTP_RECV_PACKETS_BUFFERED * (StreamConfig.packetSize + MAX_RTP_HEADER_SIZE),
+                              recvBufferBytes,
                               SOCK_QOS_TYPE_VIDEO);
     if (ctx->rtpSocket == INVALID_SOCKET) {
         VideoCallbacks.cleanup();
