@@ -657,12 +657,10 @@ int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverI
     ListenerCallbacks.stageComplete(STAGE_INPUT_STREAM_START);
     Limelog("done\n");
 
-    // Wiggle the mouse a bit to wake the display up
-    LiSendMouseMoveEventCtx(&ctx->inputContext, 1, 1);
-    PltSleepMs(10);
-    LiSendMouseMoveEventCtx(&ctx->inputContext, -1, -1);
-    PltSleepMs(10);
-
+    // Avoid sending best-effort startup mouse movement before the client has
+    // been notified that the stream is ready. This legacy wake-display nudge
+    // is non-essential and can stall connection startup on some hosts.
+    Limelog("Signaling connection started\n");
     ListenerCallbacks.connectionStarted();
 
 Cleanup:
