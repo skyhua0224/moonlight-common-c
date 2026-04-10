@@ -62,6 +62,10 @@ typedef struct _PACKET_HOLDER {
   LINKED_BLOCKING_QUEUE_ENTRY entry;
   uint32_t enetPacketFlags;
   uint8_t channelId;
+  uint64_t scrollTraceId;
+  uint64_t scrollTraceStartMs;
+  uint64_t scrollTraceLocalDispatchMs;
+  uint64_t scrollTraceQueuedMs;
 
   // The union must be the last member since we abuse the NV_UNICODE_PACKET
   // text field to store variable length data which gets split before being
@@ -88,6 +92,19 @@ typedef struct _PACKET_HOLDER {
   } packet;
 } PACKET_HOLDER, *PPACKET_HOLDER;
 
+static void attachScrollTraceMetadata(PML_INPUT_STREAM_CONTEXT ctx,
+                                      PPACKET_HOLDER holder,
+                                      uint64_t queuedMs) {
+  if (ctx == NULL || holder == NULL) {
+    return;
+  }
+
+  holder->scrollTraceId = LiGetScrollTraceIdCtx(ctx);
+  holder->scrollTraceStartMs = LiGetScrollTraceStartMsCtx(ctx);
+  holder->scrollTraceLocalDispatchMs = LiGetScrollTraceLocalDispatchMsCtx(ctx);
+  holder->scrollTraceQueuedMs = queuedMs;
+}
+
 // Initializes the input stream
 int initializeInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
   ctx->connectionContext = connectionContext;
@@ -113,6 +130,16 @@ int initializeInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEX
   // Sunshine also uses SendInput() so it's not affected either.
   ctx->needsBatchedScroll = APP_VERSION_AT_LEAST(7, 1, 409) && !IS_SUNSHINE();
   ctx->batchedScrollDelta = 0;
+  atomic_init(&ctx->scrollTraceLoggingEnabled, false);
+  atomic_init(&ctx->scrollTraceAwaitingRender, false);
+  atomic_init(&ctx->scrollTraceLastDispatchHighRes, false);
+  atomic_init(&ctx->scrollTraceLastDispatchHorizontal, false);
+  atomic_init(&ctx->scrollTraceId, 0);
+  atomic_init(&ctx->scrollTraceStartMs, 0);
+  atomic_init(&ctx->scrollTraceLastLocalDispatchMs, 0);
+  atomic_init(&ctx->scrollTraceLastQueuedMs, 0);
+  atomic_init(&ctx->scrollTraceLastSentMs, 0);
+  atomic_init(&ctx->scrollTraceLastDispatchAmount, 0);
 
   ctx->currentPenButtonState = 0;
 
@@ -268,6 +295,118 @@ static PPACKET_HOLDER allocatePacketHolder(PML_INPUT_STREAM_CONTEXT ctx, int ext
   }
 }
 
+static bool scrollPacketInfoFromHolder(PPACKET_HOLDER holder, bool* horizontal, short* amount) {
+  if (holder == NULL || horizontal == NULL || amount == NULL) {
+    return false;
+  }
+
+  if (holder->packet.header.magic == LE32(SS_HSCROLL_MAGIC)) {
+    *horizontal = true;
+    *amount = (short)BE16(holder->packet.hscroll.scrollAmount);
+    return true;
+  }
+
+  if (holder->packet.header.magic == LE32(SCROLL_MAGIC) ||
+      holder->packet.header.magic == LE32(SCROLL_MAGIC_GEN5)) {
+    *horizontal = false;
+    *amount = (short)BE16(holder->packet.scroll.scrollAmt1);
+    return true;
+  }
+
+  return false;
+}
+
+static void logScrollTraceAccumulation(PML_INPUT_STREAM_CONTEXT ctx,
+                                       bool horizontal,
+                                       short amount,
+                                       int batchedDelta) {
+  uint64_t traceId;
+  uint64_t nowMs;
+  uint64_t startMs;
+  uint64_t localDispatchMs;
+  unsigned long long startAgeMs;
+  unsigned long long localAgeMs;
+
+  traceId = LiGetScrollTraceIdCtx(ctx);
+  if (traceId == 0) {
+    return;
+  }
+
+  nowMs = LiGetMillis();
+  startMs = LiGetScrollTraceStartMsCtx(ctx);
+  localDispatchMs = LiGetScrollTraceLocalDispatchMsCtx(ctx);
+  startAgeMs = startMs != 0 && nowMs >= startMs ? nowMs - startMs : 0;
+  localAgeMs = localDispatchMs != 0 && nowMs >= localDispatchMs ? nowMs - localDispatchMs : 0;
+
+  Limelog("[inputdiag] scroll-trace accumulate trace=%llu axis=%c amount=%d batched=%d threshold=%d startAge=%llums localAge=%llums\n",
+          (unsigned long long)traceId,
+          horizontal ? 'H' : 'V',
+          (int)amount,
+          batchedDelta,
+          LI_WHEEL_DELTA,
+          startAgeMs,
+          localAgeMs);
+}
+
+static void logScrollTracePacketStage(PML_INPUT_STREAM_CONTEXT ctx,
+                                      const char* stage,
+                                      PPACKET_HOLDER holder,
+                                      int queueDepth,
+                                      bool moreData) {
+  bool horizontal;
+  short amount;
+  uint64_t nowMs;
+  uint64_t traceId;
+  uint64_t startMs;
+  uint64_t localDispatchMs;
+  uint64_t queuedMs;
+  uint64_t sentMs;
+  unsigned long long startAgeMs;
+  unsigned long long localAgeMs;
+  unsigned long long queueAgeMs;
+  unsigned long long sentAgeMs;
+
+  if (!scrollPacketInfoFromHolder(holder, &horizontal, &amount)) {
+    return;
+  }
+
+  traceId = LiGetScrollTraceIdCtx(ctx);
+  if (holder != NULL && holder->scrollTraceId != 0) {
+    traceId = holder->scrollTraceId;
+    startMs = holder->scrollTraceStartMs;
+    localDispatchMs = holder->scrollTraceLocalDispatchMs;
+    queuedMs = holder->scrollTraceQueuedMs;
+  } else {
+    traceId = LiGetScrollTraceIdCtx(ctx);
+    if (traceId == 0) {
+      return;
+    }
+
+    startMs = LiGetScrollTraceStartMsCtx(ctx);
+    localDispatchMs = LiGetScrollTraceLocalDispatchMsCtx(ctx);
+    queuedMs = LiGetScrollTraceQueuedMsCtx(ctx);
+  }
+
+  nowMs = LiGetMillis();
+  sentMs = LiGetScrollTraceSentMsCtx(ctx);
+  startAgeMs = startMs != 0 && nowMs >= startMs ? nowMs - startMs : 0;
+  localAgeMs = localDispatchMs != 0 && nowMs >= localDispatchMs ? nowMs - localDispatchMs : 0;
+  queueAgeMs = queuedMs != 0 && nowMs >= queuedMs ? nowMs - queuedMs : 0;
+  sentAgeMs = sentMs != 0 && nowMs >= sentMs ? nowMs - sentMs : 0;
+
+  Limelog("[inputdiag] scroll-trace %s trace=%llu axis=%c amount=%d queueDepth=%d more=%d startAge=%llums localAge=%llums queueAge=%llums sendAge=%llums\n",
+          stage != NULL ? stage : "unknown",
+          (unsigned long long)traceId,
+          horizontal ? 'H' : 'V',
+          (int)amount,
+          queueDepth,
+          moreData ? 1 : 0,
+          startAgeMs,
+          localAgeMs,
+          queueAgeMs,
+          sentAgeMs);
+}
+
 static bool sendInputPacket(PML_INPUT_STREAM_CONTEXT ctx, PPACKET_HOLDER holder, bool moreData) {
   SOCK_RET err;
 
@@ -401,10 +540,19 @@ static void inputSendThreadProc(void *context) {
   uint64_t lastPenPacketTime = 0;
 
   while (!PltIsThreadInterrupted(&ctx->inputSendThread)) {
+    bool scrollPacket;
+    bool scrollHorizontal;
+    bool moreData;
+    short scrollAmount;
+
     err = LbqWaitForQueueElement(&ctx->packetQueue, (void **)&holder);
     if (err != LBQ_SUCCESS) {
       return;
     }
+
+    scrollPacket = scrollPacketInfoFromHolder(holder, &scrollHorizontal, &scrollAmount);
+    (void)scrollHorizontal;
+    (void)scrollAmount;
 
     // If it's a multi-controller packet we can do batching
     if (holder->packet.header.magic == multiControllerMagicLE) {
@@ -738,9 +886,18 @@ static void inputSendThreadProc(void *context) {
     }
 
     // Encrypt and send the input packet
-    if (!sendInputPacket(ctx, holder, LbqGetItemCount(&ctx->packetQueue) > 0)) {
+    moreData = LbqGetItemCount(&ctx->packetQueue) > 0;
+    if (!sendInputPacket(ctx, holder, moreData)) {
       freePacketHolder(ctx, holder);
       return;
+    }
+    if (scrollPacket) {
+      LiNoteScrollTraceSentCtx(ctx, LiGetMillis());
+      logScrollTracePacketStage(ctx,
+                                "sent",
+                                holder,
+                                LbqGetItemCount(&ctx->packetQueue),
+                                moreData);
     }
 
     freePacketHolder(ctx, holder);
@@ -1358,6 +1515,9 @@ int LiSendHighResScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmount
     }
 
     ctx->batchedScrollDelta += scrollAmount;
+    if (abs(ctx->batchedScrollDelta) < LI_WHEEL_DELTA) {
+      logScrollTraceAccumulation(ctx, false, scrollAmount, ctx->batchedScrollDelta);
+    }
 
     while (abs(ctx->batchedScrollDelta) >= LI_WHEEL_DELTA) {
       scrollAmount = ctx->batchedScrollDelta > 0 ? LI_WHEEL_DELTA : -LI_WHEEL_DELTA;
@@ -1380,6 +1540,7 @@ int LiSendHighResScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmount
       holder->packet.scroll.scrollAmt1 = BE16(scrollAmount);
       holder->packet.scroll.scrollAmt2 = holder->packet.scroll.scrollAmt1;
       holder->packet.scroll.zero3 = 0;
+      attachScrollTraceMetadata(ctx, holder, LiGetMillis());
 
       err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
       if (err != LBQ_SUCCESS) {
@@ -1388,6 +1549,13 @@ int LiSendHighResScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmount
         freePacketHolder(ctx, holder);
         return err;
       }
+
+      LiNoteScrollTraceQueuedCtx(ctx, LiGetMillis());
+      logScrollTracePacketStage(ctx,
+                                "queued",
+                                holder,
+                                LbqGetItemCount(&ctx->packetQueue),
+                                false);
 
       ctx->batchedScrollDelta -= scrollAmount;
     }
@@ -1412,12 +1580,21 @@ int LiSendHighResScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmount
     holder->packet.scroll.scrollAmt1 = BE16(scrollAmount);
     holder->packet.scroll.scrollAmt2 = holder->packet.scroll.scrollAmt1;
     holder->packet.scroll.zero3 = 0;
+    attachScrollTraceMetadata(ctx, holder, LiGetMillis());
 
     err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
     if (err != LBQ_SUCCESS) {
       LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
       Limelog("Input queue reached maximum size limit\n");
       freePacketHolder(ctx, holder);
+    }
+    else {
+      LiNoteScrollTraceQueuedCtx(ctx, LiGetMillis());
+      logScrollTracePacketStage(ctx,
+                                "queued",
+                                holder,
+                                LbqGetItemCount(&ctx->packetQueue),
+                                false);
     }
   }
 
@@ -1467,12 +1644,21 @@ int LiSendHighResHScrollEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short scrollAmoun
       BE32(sizeof(SS_HSCROLL_PACKET) - sizeof(uint32_t));
   holder->packet.hscroll.header.magic = LE32(SS_HSCROLL_MAGIC);
   holder->packet.hscroll.scrollAmount = BE16(scrollAmount);
+  attachScrollTraceMetadata(ctx, holder, LiGetMillis());
 
   err = LbqOfferQueueItem(&ctx->packetQueue, holder, &holder->entry);
   if (err != LBQ_SUCCESS) {
     LC_ASSERT(err == LBQ_BOUND_EXCEEDED);
     Limelog("Input queue reached maximum size limit\n");
     freePacketHolder(ctx, holder);
+  }
+  else {
+    LiNoteScrollTraceQueuedCtx(ctx, LiGetMillis());
+    logScrollTracePacketStage(ctx,
+                              "queued",
+                              holder,
+                              LbqGetItemCount(&ctx->packetQueue),
+                              false);
   }
 
   return err;
@@ -1895,4 +2081,3 @@ int LiSendControllerBatteryEvent(uint8_t controllerNumber, uint8_t batteryState,
                                  uint8_t batteryPercentage) {
     return LiSendControllerBatteryEventCtx(LiGetEffectiveInputContext(), controllerNumber, batteryState, batteryPercentage);
 }
-

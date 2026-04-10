@@ -9,6 +9,7 @@
 #include "Input.h"
 #include "RtpAudioQueue.h"
 #include "ByteBuffer.h"
+#include <stdatomic.h>
 
 // Forward declarations for context types
 typedef struct _ML_CONNECTION_CONTEXT ML_CONNECTION_CONTEXT, *PML_CONNECTION_CONTEXT;
@@ -335,7 +336,128 @@ typedef struct _ML_INPUT_STREAM_CONTEXT {
             int width, height;
             bool dirty;
         } currentAbsoluteMouseState;
+        atomic_bool scrollTraceLoggingEnabled;
+        atomic_bool scrollTraceAwaitingRender;
+        atomic_bool scrollTraceLastDispatchHighRes;
+        atomic_bool scrollTraceLastDispatchHorizontal;
+        atomic_uint_fast64_t scrollTraceId;
+        atomic_uint_fast64_t scrollTraceStartMs;
+        atomic_uint_fast64_t scrollTraceLastLocalDispatchMs;
+        atomic_uint_fast64_t scrollTraceLastQueuedMs;
+        atomic_uint_fast64_t scrollTraceLastSentMs;
+        atomic_int_fast16_t scrollTraceLastDispatchAmount;
 } ML_INPUT_STREAM_CONTEXT, *PML_INPUT_STREAM_CONTEXT;
+
+static inline void LiSetScrollTraceDiagnosticsEnabledCtx(PML_INPUT_STREAM_CONTEXT ctx, bool enabled) {
+    if (ctx == NULL) {
+        return;
+    }
+
+    atomic_store_explicit(&ctx->scrollTraceLoggingEnabled, enabled, memory_order_relaxed);
+}
+
+static inline bool LiIsScrollTraceDiagnosticsEnabledCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL &&
+           atomic_load_explicit(&ctx->scrollTraceLoggingEnabled, memory_order_relaxed);
+}
+
+static inline void LiStartScrollTraceCtx(PML_INPUT_STREAM_CONTEXT ctx, uint64_t traceId, uint64_t startedMs) {
+    if (ctx == NULL) {
+        return;
+    }
+
+    atomic_store_explicit(&ctx->scrollTraceId, traceId, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceStartMs, startedMs, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastLocalDispatchMs, 0, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastQueuedMs, 0, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastSentMs, 0, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastDispatchAmount, 0, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastDispatchHighRes, false, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastDispatchHorizontal, false, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceAwaitingRender, false, memory_order_relaxed);
+}
+
+static inline void LiNoteScrollTraceLocalDispatchCtx(PML_INPUT_STREAM_CONTEXT ctx,
+                                                     uint64_t traceId,
+                                                     uint64_t dispatchMs,
+                                                     short amount,
+                                                     bool highRes,
+                                                     bool horizontal) {
+    if (ctx == NULL) {
+        return;
+    }
+
+    atomic_store_explicit(&ctx->scrollTraceId, traceId, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastLocalDispatchMs, dispatchMs, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastDispatchAmount, amount, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastDispatchHighRes, highRes, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceLastDispatchHorizontal, horizontal, memory_order_relaxed);
+}
+
+static inline void LiNoteScrollTraceQueuedCtx(PML_INPUT_STREAM_CONTEXT ctx, uint64_t queuedMs) {
+    if (ctx == NULL) {
+        return;
+    }
+
+    atomic_store_explicit(&ctx->scrollTraceLastQueuedMs, queuedMs, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceAwaitingRender, false, memory_order_relaxed);
+}
+
+static inline void LiNoteScrollTraceSentCtx(PML_INPUT_STREAM_CONTEXT ctx, uint64_t sentMs) {
+    if (ctx == NULL) {
+        return;
+    }
+
+    atomic_store_explicit(&ctx->scrollTraceLastSentMs, sentMs, memory_order_relaxed);
+    atomic_store_explicit(&ctx->scrollTraceAwaitingRender, true, memory_order_relaxed);
+}
+
+static inline void LiCompleteScrollTraceRenderCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    if (ctx == NULL) {
+        return;
+    }
+
+    atomic_store_explicit(&ctx->scrollTraceAwaitingRender, false, memory_order_relaxed);
+}
+
+static inline uint64_t LiGetScrollTraceIdCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL ? atomic_load_explicit(&ctx->scrollTraceId, memory_order_relaxed) : 0;
+}
+
+static inline uint64_t LiGetScrollTraceStartMsCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL ? atomic_load_explicit(&ctx->scrollTraceStartMs, memory_order_relaxed) : 0;
+}
+
+static inline uint64_t LiGetScrollTraceLocalDispatchMsCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL ? atomic_load_explicit(&ctx->scrollTraceLastLocalDispatchMs, memory_order_relaxed) : 0;
+}
+
+static inline uint64_t LiGetScrollTraceQueuedMsCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL ? atomic_load_explicit(&ctx->scrollTraceLastQueuedMs, memory_order_relaxed) : 0;
+}
+
+static inline uint64_t LiGetScrollTraceSentMsCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL ? atomic_load_explicit(&ctx->scrollTraceLastSentMs, memory_order_relaxed) : 0;
+}
+
+static inline short LiGetScrollTraceLastDispatchAmountCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL ? (short)atomic_load_explicit(&ctx->scrollTraceLastDispatchAmount, memory_order_relaxed) : 0;
+}
+
+static inline bool LiGetScrollTraceLastDispatchHighResCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL &&
+           atomic_load_explicit(&ctx->scrollTraceLastDispatchHighRes, memory_order_relaxed);
+}
+
+static inline bool LiGetScrollTraceLastDispatchHorizontalCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL &&
+           atomic_load_explicit(&ctx->scrollTraceLastDispatchHorizontal, memory_order_relaxed);
+}
+
+static inline bool LiIsScrollTraceAwaitingRenderCtx(PML_INPUT_STREAM_CONTEXT ctx) {
+    return ctx != NULL &&
+           atomic_load_explicit(&ctx->scrollTraceAwaitingRender, memory_order_relaxed);
+}
 
 // Connection context (multi-stream scaffolding)
 typedef struct _ML_CONNECTION_CONTEXT {
