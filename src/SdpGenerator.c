@@ -355,6 +355,20 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
             EncryptionFeaturesEnabled |= SS_ENC_AUDIO;
         }
 
+        // If microphone encryption is supported by the host and desired by the client, use it.
+        // Only negotiate this when microphone uplink itself is enabled for the session.
+        if (StreamConfig.enableMic &&
+            (EncryptionFeaturesSupported & SS_ENC_MICROPHONE) &&
+            (StreamConfig.encryptionFlags & ENCFLG_MICROPHONE)) {
+            EncryptionFeaturesEnabled |= SS_ENC_MICROPHONE;
+        }
+        else if (StreamConfig.enableMic &&
+                 (EncryptionFeaturesRequested & SS_ENC_MICROPHONE) &&
+                 !(StreamConfig.encryptionFlags & ENCFLG_MICROPHONE)) {
+            Limelog("Enabling microphone encryption by host request despite client opt-out. Microphone uplink latency may increase!");
+            EncryptionFeaturesEnabled |= SS_ENC_MICROPHONE;
+        }
+
         snprintf(payloadStr, sizeof(payloadStr), "%u", EncryptionFeaturesEnabled);
         err |= addAttributeString(&optionHead, "x-ss-general.encryptionEnabled", payloadStr);
 
