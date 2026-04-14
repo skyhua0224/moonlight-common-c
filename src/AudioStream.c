@@ -65,6 +65,37 @@ typedef struct _QUEUED_AUDIO_PACKET {
     char data[MAX_PACKET_SIZE];
 } QUEUED_AUDIO_PACKET, *PQUEUED_AUDIO_PACKET;
 
+static void logChosenOpusConfig(const char *label,
+                                POPUS_MULTISTREAM_CONFIGURATION opusConfig) {
+    char mappingStr[256];
+    size_t offset = 0;
+    int i;
+
+    if (label == NULL || opusConfig == NULL) {
+        return;
+    }
+
+    mappingStr[0] = '\0';
+    for (i = 0; i < opusConfig->channelCount &&
+                i < AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT &&
+                offset < sizeof(mappingStr);
+         i++) {
+        int written = snprintf(mappingStr + offset, sizeof(mappingStr) - offset,
+                               "%s%u", i == 0 ? "" : ",",
+                               (unsigned int)opusConfig->mapping[i]);
+        if (written < 0 || (size_t)written >= sizeof(mappingStr) - offset) {
+            offset = sizeof(mappingStr) - 1;
+            break;
+        }
+        offset += (size_t)written;
+    }
+
+    mappingStr[sizeof(mappingStr) - 1] = '\0';
+    Limelog("%s: channels=%d streams=%d coupled=%d samplesPerFrame=%d mapping=[%s]\n",
+            label, opusConfig->channelCount, opusConfig->streams,
+            opusConfig->coupledStreams, opusConfig->samplesPerFrame, mappingStr);
+}
+
 static void AudioPingThreadProc(void* context) {
     PML_AUDIO_STREAM_CONTEXT ctx = (PML_AUDIO_STREAM_CONTEXT)context;
     LiSetThreadConnectionContext(ctx->connectionContext);
@@ -505,6 +536,11 @@ int startAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, void* audioContext, int ar
     }
 
     chosenConfig.samplesPerFrame = 48 * AudioPacketDuration;
+    Limelog("Audio stream starting: highQualityEnabled=%d highQualitySupported=%d audioPacketDuration=%d\n",
+            HighQualitySurroundEnabled ? 1 : 0,
+            HighQualitySurroundSupported ? 1 : 0,
+            AudioPacketDuration);
+    logChosenOpusConfig("Audio stream chosen Opus config", &chosenConfig);
 
     err = AudioCallbacks.init(StreamConfig.audioConfiguration, &chosenConfig, audioContext, arFlags);
     if (err != 0) {

@@ -104,6 +104,12 @@ typedef struct _STREAM_CONFIGURATION {
 
   // Specifies whether to enable microphone streaming from the client to host
   bool enableMic;
+
+  // Disables high quality surround negotiation for cases where the client
+  // intentionally prefers the server's normal surround topology (for example,
+  // 7.1.4 enhanced stereo virtualization that is more stable on 8/4 than
+  // 12/0 while still keeping multichannel semantics intact).
+  bool disableHighQualitySurround;
 } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
 
 // Use this function to zero the stream configuration when allocated on the
@@ -205,6 +211,12 @@ typedef struct _DECODE_UNIT {
 // able
 #define AUDIO_CONFIGURATION_71_SURROUND MAKE_AUDIO_CONFIGURATION(8, 0x63F)
 
+// Specifies that the audio stream should be in 7.1.4 surround sound (12
+// channels) if the PC is able. Channel mask:
+// FL|FR|FC|LFE|BL|BR|SL|SR + TOP_FL|TOP_FR|TOP_BL|TOP_BR = 0x63F | 0xF000 =
+// 0xF63F
+#define AUDIO_CONFIGURATION_714_SURROUND MAKE_AUDIO_CONFIGURATION(12, 0xF63F)
+
 // Specifies an audio configuration by channel count and channel mask
 // See
 // https://docs.microsoft.com/en-us/windows-hardware/drivers/audio/channel-mask
@@ -225,7 +237,7 @@ typedef struct _DECODE_UNIT {
    CHANNEL_COUNT_FROM_AUDIO_CONFIGURATION(x))
 
 // The maximum number of channels supported
-#define AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT 8
+#define AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT 12
 
 // Passed in StreamConfiguration.supportedVideoFormats to specify supported
 // codecs and to DecoderRendererSetup() to specify selected codec.

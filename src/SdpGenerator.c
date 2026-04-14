@@ -561,7 +561,9 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
 
     if (AppVersionQuad[0] >= 7) {
         if (StreamConfig.bitrate >= HIGH_AUDIO_BITRATE_THRESHOLD && audioChannelCount > 2 &&
-                HighQualitySurroundSupported && (AudioCallbacks.capabilities & CAPABILITY_SLOW_OPUS_DECODER) == 0) {
+                HighQualitySurroundSupported &&
+                !StreamConfig.disableHighQualitySurround &&
+                (AudioCallbacks.capabilities & CAPABILITY_SLOW_OPUS_DECODER) == 0) {
             // Enable high quality mode for surround sound
             err |= addAttributeString(&optionHead, "x-nv-audio.surround.AudioQuality", "1");
 
@@ -571,6 +573,9 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
 
             // Use 5 ms frames since we don't have a slow decoder
             AudioPacketDuration = 5;
+            Limelog("Audio SDP surround request: channels=%d mask=%d bitrate=%d highQualityRequested=1 highQualitySupported=%d packetDuration=%d\n",
+                    audioChannelCount, audioChannelMask, StreamConfig.bitrate,
+                    HighQualitySurroundSupported ? 1 : 0, AudioPacketDuration);
         }
         else {
             err |= addAttributeString(&optionHead, "x-nv-audio.surround.AudioQuality", "0");
@@ -585,6 +590,14 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
             else {
                 // Use 5 ms packets by default for lowest latency
                 AudioPacketDuration = 5;
+            }
+
+            Limelog("Audio SDP surround request: channels=%d mask=%d bitrate=%d highQualityRequested=0 highQualitySupported=%d packetDuration=%d\n",
+                    audioChannelCount, audioChannelMask, StreamConfig.bitrate,
+                    HighQualitySurroundSupported ? 1 : 0, AudioPacketDuration);
+            if (StreamConfig.disableHighQualitySurround && audioChannelCount > 2) {
+                Limelog("Audio SDP surround HQ disabled by client preference: channels=%d\n",
+                        audioChannelCount);
             }
         }
 

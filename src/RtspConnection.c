@@ -798,10 +798,136 @@ static bool sendVideoAnnounce(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEX
   return ret;
 }
 
+static bool isDelimitedFormat(const char *paramStr) {
+  while (*paramStr && *paramStr != ' ' && *paramStr != '\r' &&
+         *paramStr != '\n') {
+    if (*paramStr == ',' || *paramStr == ';' || *paramStr == ':' ||
+        *paramStr == '|') {
+      return true;
+    }
+    paramStr++;
+  }
+
+  return false;
+}
+
+static bool parseNextInt(char **paramStr, int *value) {
+  char *endPtr;
+  long val;
+
+  while (**paramStr == ',' || **paramStr == ';' || **paramStr == ':' ||
+         **paramStr == '|') {
+    (*paramStr)++;
+  }
+
+  if (!**paramStr || **paramStr == ' ' || **paramStr == '\r' ||
+      **paramStr == '\n') {
+    return false;
+  }
+
+  val = strtol(*paramStr, &endPtr, 10);
+  if (endPtr == *paramStr) {
+    return false;
+  }
+
+  *value = (int)val;
+
+  if (*endPtr == ',' || *endPtr == ';' || *endPtr == ':' ||
+      *endPtr == '|') {
+    endPtr++;
+  }
+
+  *paramStr = endPtr;
+  return true;
+}
+
+static void logOpusConfigDetails(PML_CONNECTION_CONTEXT ctx,
+                                 const char *label,
+                                 POPUS_MULTISTREAM_CONFIGURATION opusConfig) {
+  char mappingStr[256];
+  size_t offset = 0;
+  int i;
+
+  if (label == NULL || opusConfig == NULL) {
+    return;
+  }
+
+  mappingStr[0] = '\0';
+  for (i = 0; i < opusConfig->channelCount &&
+              i < AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT &&
+              offset < sizeof(mappingStr);
+       i++) {
+    int written = snprintf(mappingStr + offset, sizeof(mappingStr) - offset,
+                           "%s%u", i == 0 ? "" : ",",
+                           (unsigned int)opusConfig->mapping[i]);
+    if (written < 0 ||
+        (size_t)written >= sizeof(mappingStr) - offset) {
+      offset = sizeof(mappingStr) - 1;
+      break;
+    }
+    offset += (size_t)written;
+  }
+
+  mappingStr[sizeof(mappingStr) - 1] = '\0';
+  ListenerCallbacks.logMessage("%s: channels=%d streams=%d coupled=%d mapping=[%s]\n",
+                               label,
+                               opusConfig->channelCount,
+                               opusConfig->streams,
+                               opusConfig->coupledStreams,
+                               mappingStr);
+}
+
+static int parseOpusConfigFromDelimitedString(
+    PML_CONNECTION_CONTEXT ctx, char *paramStr, int channelCount,
+    POPUS_MULTISTREAM_CONFIGURATION opusConfig) {
+  int i;
+  int value;
+
+  if (channelCount > AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT) {
+    Limelog("Invalid channel count: %d\n", channelCount);
+    return -1;
+  }
+
+  opusConfig->channelCount = channelCount;
+
+  if (!parseNextInt(&paramStr, &value)) {
+    Limelog("Invalid stream count in delimited format\n");
+    return -1;
+  }
+  opusConfig->streams = value;
+
+  if (!parseNextInt(&paramStr, &value)) {
+    Limelog("Invalid coupled stream count in delimited format\n");
+    return -2;
+  }
+  opusConfig->coupledStreams = value;
+
+  for (i = 0; i < opusConfig->channelCount; i++) {
+    if (!parseNextInt(&paramStr, &value)) {
+      Limelog("Invalid mapping value at %d in delimited format\n", i);
+      return -3;
+    }
+
+    if (value < 0 || value > 255) {
+      Limelog("Mapping value out of range at %d: %d\n", i, value);
+      return -3;
+    }
+
+    opusConfig->mapping[i] = (unsigned char)value;
+  }
+
+  return 0;
+}
+
 static int
 parseOpusConfigFromParamString(PML_CONNECTION_CONTEXT ctx, char *paramStr, int channelCount,
                                POPUS_MULTISTREAM_CONFIGURATION opusConfig) {
   int i;
+
+  if (channelCount > 8 || isDelimitedFormat(paramStr)) {
+    return parseOpusConfigFromDelimitedString(ctx, paramStr, channelCount,
+                                              opusConfig);
+  }
 
   if (channelCount > AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT) {
     Limelog("Invalid channel count: %d\n", channelCount);
@@ -915,6 +1041,8 @@ static int parseOpusConfigurations(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_C
       // GFE's normal-quality channel mapping differs from the one our clients
       // use. They use FL FR C RL RR SL SR LFE, but we use FL FR C LFE RL RR SL
       // SR. We'll need to swap the mappings to match the expected values.
+      // This reordering only applies to 5.1 and 7.1 from GFE. For 7.1.4
+      // (12ch) from Sunshine, the mapping is already in the correct order.
       if (channelCount == 6 || channelCount == 8) {
         OPUS_MULTISTREAM_CONFIGURATION originalMapping =
             NormalQualityOpusConfig;
@@ -927,6 +1055,9 @@ static int parseOpusConfigurations(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_C
         memcpy(&NormalQualityOpusConfig.mapping[4], &originalMapping.mapping[3],
                channelCount - 4);
       }
+
+      logOpusConfigDetails(ctx, "Audio RTSP normal Opus config",
+                           &NormalQualityOpusConfig);
 
       // If this configuration is compatible with high quality mode, we may have
       // another matching surround-params value for high quality mode.
@@ -942,6 +1073,18 @@ static int parseOpusConfigurations(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_C
           LC_ASSERT(err == 0);
           return err;
         }
+
+        if (channelCount == 6 || channelCount == 8) {
+          OPUS_MULTISTREAM_CONFIGURATION originalMapping =
+              HighQualityOpusConfig;
+          HighQualityOpusConfig.mapping[3] =
+              originalMapping.mapping[channelCount - 1];
+          memcpy(&HighQualityOpusConfig.mapping[4], &originalMapping.mapping[3],
+                 channelCount - 4);
+        }
+
+        logOpusConfigDetails(ctx, "Audio RTSP high Opus config",
+                             &HighQualityOpusConfig);
 
         // We can request high quality audio
         HighQualitySurroundSupported = true;
@@ -969,6 +1112,15 @@ static int parseOpusConfigurations(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_C
         NormalQualityOpusConfig.mapping[3] = 5;
         NormalQualityOpusConfig.mapping[4] = 2;
         NormalQualityOpusConfig.mapping[5] = 3;
+      } else if (channelCount == 12) {
+        NormalQualityOpusConfig.channelCount = 12;
+        NormalQualityOpusConfig.streams = 8;
+        NormalQualityOpusConfig.coupledStreams = 4;
+        for (int i = 0; i < 12; i++) {
+          NormalQualityOpusConfig.mapping[i] = (unsigned char)i;
+        }
+        logOpusConfigDetails(ctx, "Audio RTSP fallback Opus config",
+                             &NormalQualityOpusConfig);
       } else {
         // We don't have a hardcoded fallback mapping, so we have no choice but
         // to fail.
@@ -976,6 +1128,10 @@ static int parseOpusConfigurations(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_C
       }
     }
   }
+
+  Limelog("Audio RTSP surround capability summary: requestedChannels=%d highQualitySupported=%d\n",
+          CHANNEL_COUNT_FROM_AUDIO_CONFIGURATION(StreamConfig.audioConfiguration),
+          HighQualitySurroundSupported ? 1 : 0);
 
   return 0;
 }
