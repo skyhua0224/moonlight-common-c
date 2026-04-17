@@ -29,6 +29,11 @@ extern "C" {
 #define COLOR_RANGE_LIMITED 0
 #define COLOR_RANGE_FULL 1
 
+// Values for the 'dynamicRangeMode' field below
+#define DYNAMIC_RANGE_MODE_SDR 0
+#define DYNAMIC_RANGE_MODE_HDR10_PQ 1
+#define DYNAMIC_RANGE_MODE_HLG 2
+
 // Values for 'encryptionFlags' field below
 #define ENCFLG_NONE 0x00000000
 #define ENCFLG_AUDIO 0x00000001
@@ -110,6 +115,12 @@ typedef struct _STREAM_CONFIGURATION {
   // 7.1.4 enhanced stereo virtualization that is more stable on 8/4 than
   // 12/0 while still keeping multichannel semantics intact).
   bool disableHighQualitySurround;
+
+  // Specifies the preferred dynamic range mode for HDR-capable 10-bit streams.
+  // Use DYNAMIC_RANGE_MODE_SDR for SDR, DYNAMIC_RANGE_MODE_HDR10_PQ for HDR10,
+  // and DYNAMIC_RANGE_MODE_HLG for HLG. When set to an unsupported value, the
+  // client will fall back to HDR10 PQ for HDR streams.
+  int dynamicRangeMode;
 } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
 
 // Use this function to zero the stream configuration when allocated on the
