@@ -25,6 +25,33 @@ typedef struct _RTSP_HANDSHAKE_CONTEXT {
     ENetPeer *peer;
 } RTSP_HANDSHAKE_CONTEXT, *PRTSP_HANDSHAKE_CONTEXT;
 
+static const char* videoFormatName(int format) {
+    switch (format) {
+        case VIDEO_FORMAT_AV1_HIGH10_444:
+            return "AV1 High10 4:4:4";
+        case VIDEO_FORMAT_AV1_MAIN10:
+            return "AV1 Main10";
+        case VIDEO_FORMAT_AV1_HIGH8_444:
+            return "AV1 High8 4:4:4";
+        case VIDEO_FORMAT_AV1_MAIN8:
+            return "AV1 Main8";
+        case VIDEO_FORMAT_H265_REXT10_444:
+            return "HEVC RExt10 4:4:4";
+        case VIDEO_FORMAT_H265_MAIN10:
+            return "HEVC Main10";
+        case VIDEO_FORMAT_H265_REXT8_444:
+            return "HEVC RExt8 4:4:4";
+        case VIDEO_FORMAT_H265:
+            return "HEVC Main";
+        case VIDEO_FORMAT_H264_HIGH8_444:
+            return "H.264 High 4:4:4";
+        case VIDEO_FORMAT_H264:
+            return "H.264 High";
+        default:
+            return "Unknown";
+    }
+}
+
 // Macros to redirect state access to the handshake context
 #define currentSeqNumber (rtsp->currentSeqNumber)
 #define rtspTargetUrl (rtsp->rtspTargetUrl)
@@ -1461,6 +1488,10 @@ int performRtspHandshakeCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serv
                 "resolutions above 4K using H.264 will likely fail!\n");
       }
     }
+
+    Limelog("Negotiated video format: %s (0x%x)\n",
+            videoFormatName(NegotiatedVideoFormat),
+            NegotiatedVideoFormat);
 
     // Look for the SDP attribute that indicates we're dealing with a server
     // that supports RFI

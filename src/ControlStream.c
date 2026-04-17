@@ -2650,7 +2650,7 @@ int startControlStream(void) {
 }
 
 bool LiGetCurrentHostDisplayHdrModeCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
-    return ctx->hdrEnabled;
+    return ctx != NULL && ctx->hdrEnabled;
 }
 
 bool LiGetCurrentHostDisplayHdrMode(void) {
@@ -2658,6 +2658,10 @@ bool LiGetCurrentHostDisplayHdrMode(void) {
 }
 
 bool LiGetHdrMetadataCtx(PML_CONTROL_STREAM_CONTEXT ctx, PSS_HDR_METADATA metadata) {
+    if (ctx == NULL || metadata == NULL || ctx->connectionContext == NULL) {
+        return false;
+    }
+
     if (!IS_SUNSHINE_CTX(ctx->connectionContext) || !ctx->hdrEnabled) {
         return false;
     }

@@ -524,9 +524,15 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         }
 
         if (AppVersionQuad[0] >= 7) {
-            // Enable HDR if requested
+            // Advertise the selected dynamic range mode for 10-bit HDR streams.
             if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_10BIT) {
-                err |= addAttributeString(&optionHead, "x-nv-video[0].dynamicRangeMode", "1");
+                int dynamicRangeMode = StreamConfig.dynamicRangeMode;
+                if (dynamicRangeMode != DYNAMIC_RANGE_MODE_HDR10_PQ &&
+                    dynamicRangeMode != DYNAMIC_RANGE_MODE_HLG) {
+                    dynamicRangeMode = DYNAMIC_RANGE_MODE_HDR10_PQ;
+                }
+                snprintf(payloadStr, sizeof(payloadStr), "%d", dynamicRangeMode);
+                err |= addAttributeString(&optionHead, "x-nv-video[0].dynamicRangeMode", payloadStr);
             }
             else {
                 err |= addAttributeString(&optionHead, "x-nv-video[0].dynamicRangeMode", "0");
