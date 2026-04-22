@@ -75,6 +75,24 @@ extern int AppVersionQuad[4];
 // Client feature flags for x-ml-general.featureFlags SDP attribute
 #define ML_FF_FEC_STATUS 0x01 // Client sends SS_FRAME_FEC_STATUS for frame losses
 #define ML_FF_SESSION_ID_V1 0x02 // Client supports X-SS-Ping-Payload and X-SS-Connect-Data
+#define ML_FF_CLIPBOARD_TEXT 0x04 // Client supports clipboard text sync
+#define ML_FF_CLIPBOARD_IMAGE 0x08 // Client supports clipboard image sync
+
+// Clipboard control stream packet type and payload kinds used by the Sunshine
+// clipboard sync extension.
+#define SS_CLIPBOARD_PTYPE 0x5508
+
+#define LI_CLIPBOARD_MSG_BIND 0x01
+#define LI_CLIPBOARD_MSG_UNBIND 0x02
+#define LI_CLIPBOARD_MSG_SNAPSHOT_REQUEST 0x03
+#define LI_CLIPBOARD_MSG_ITEM_START 0x04
+#define LI_CLIPBOARD_MSG_ITEM_CHUNK 0x05
+#define LI_CLIPBOARD_MSG_ITEM_END 0x06
+#define LI_CLIPBOARD_MSG_ITEM_CANCEL 0x07
+
+#define LI_CLIPBOARD_TRANSFER_FLAG_SNAPSHOT 0x01
+#define LI_CLIPBOARD_MAX_CHUNK_SIZE 16384
+#define LI_CLIPBOARD_MAX_IMAGE_SIZE (4U * 1024U * 1024U)
 
 #define UDP_RECV_POLL_TIMEOUT_MS 100
 
@@ -273,6 +291,19 @@ typedef struct _ML_CONTROL_STREAM_CONTEXT {
         PPLT_CRYPTO_CONTEXT encryptionCtx;
         PPLT_CRYPTO_CONTEXT decryptionCtx;
 
+        struct {
+            bool active;
+            uint8_t itemType;
+            uint8_t transferFlags;
+            uint64_t itemId;
+            uint64_t contentHash;
+            uint32_t totalLength;
+            uint32_t receivedLength;
+            char* mimeType;
+            char* name;
+            uint8_t* data;
+        } incomingClipboardTransfer;
+
         // Protocol version tables
         short* packetTypes;
         short* payloadLengths;
@@ -284,6 +315,11 @@ int initializeControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx, PML_CONNECTION_CO
 int startControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx);
 int stopControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx);
 void destroyControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+int LiBindClipboardSessionCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+int LiUnbindClipboardSessionCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+int LiRequestClipboardSnapshotCtx(PML_CONTROL_STREAM_CONTEXT ctx);
+int LiSendClipboardItemCtx(PML_CONTROL_STREAM_CONTEXT ctx,
+                           const LI_CLIPBOARD_ITEM* item);
 
 // Microphone stream context (multi-stream scaffolding)
 typedef struct _ML_MICROPHONE_STREAM_CONTEXT {
@@ -626,6 +662,7 @@ int LiInputContextIsInitialized(PML_INPUT_STREAM_CONTEXT ctx);
 void* LiInputContextGetConnectionCtx(PML_INPUT_STREAM_CONTEXT ctx);
 PML_INPUT_STREAM_CONTEXT LiGetInputContextFromConnectionCtx(PML_CONNECTION_CONTEXT ctx);
 PML_CONNECTION_CONTEXT LiGetGlobalConnectionContextPtr(void);
+uint32_t LiGetHostFeatureFlagsCtx(PML_CONNECTION_CONTEXT ctx);
 
 
 int LiSendMouseMoveEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short deltaX, short deltaY);

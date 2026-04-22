@@ -33,6 +33,7 @@
 
 // This is a private header, but it just contains some time macros
 #include <enet/time.h>
+#include <inttypes.h>
 
 #ifndef MIN
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -136,6 +137,13 @@ static __declspec(thread) PML_CONTROL_STREAM_CONTEXT tls_CurrentControlStreamCtx
 static __thread PML_CONTROL_STREAM_CONTEXT tls_CurrentControlStreamCtx = NULL;
 #endif
 
+static atomic_uint_fast64_t sClipboardItemCounter = 1;
+
+static bool sendMessageAndForget(PML_CONTROL_STREAM_CONTEXT ctx, short ptype,
+                                 short paylen, const void* payload,
+                                 uint8_t channelId, uint32_t flags,
+                                 bool moreData);
+
 #define CONN_IMMEDIATE_POOR_LOSS_RATE 30
 #define CONN_CONSECUTIVE_POOR_LOSS_RATE 15
 #define CONN_OKAY_LOSS_RATE 5
@@ -154,6 +162,7 @@ static __thread PML_CONTROL_STREAM_CONTEXT tls_CurrentControlStreamCtx = NULL;
 #define IDX_SET_MOTION_EVENT 10
 #define IDX_SET_RGB_LED 11
 #define IDX_DS_ADAPTIVE_TRIGGERS 12
+#define IDX_CLIPBOARD 13
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -171,6 +180,7 @@ static const short packetTypesGen3[] = {
     -1,     // Rumble triggers (unused)
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
+    -1,     // Clipboard sync (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -185,6 +195,7 @@ static const short packetTypesGen4[] = {
     -1,     // Rumble triggers (unused)
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
+    -1,     // Clipboard sync (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -199,6 +210,7 @@ static const short packetTypesGen5[] = {
     -1,     // Rumble triggers (unused)
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
+    -1,     // Clipboard sync (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -213,6 +225,8 @@ static const short packetTypesGen7[] = {
     -1,     // Rumble triggers (unused)
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
+    -1,     // Set Adaptive Triggers (unused)
+    SS_CLIPBOARD_PTYPE, // Clipboard sync (Sunshine protocol extension)
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -228,6 +242,7 @@ static const short packetTypesGen7Enc[] = {
     0x5501, // Set motion event (Sunshine protocol extension)
     0x5502, // Set RGB LED (Sunshine protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
+    SS_CLIPBOARD_PTYPE, // Clipboard sync (Sunshine protocol extension)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -321,6 +336,7 @@ int initializeControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx, PML_CONNECTION_CO
     PltCreateMutex(&ctx->enetMutex);
 
     ctx->encryptedControlStream = APP_VERSION_AT_LEAST_CTX(ctx->connectionContext, 7, 1, 431);
+    memset(&ctx->incomingClipboardTransfer, 0, sizeof(ctx->incomingClipboardTransfer));
 
     if (ControlStreamAppVersionQuad[0] == 3) {
         ctx->packetTypes = (short*)packetTypesGen3;
@@ -393,11 +409,146 @@ static void freeBasicLbqList(PLINKED_BLOCKING_QUEUE_ENTRY entry) {
     }
 }
 
+static void freeIncomingClipboardTransfer(PML_CONTROL_STREAM_CONTEXT ctx) {
+    free(ctx->incomingClipboardTransfer.mimeType);
+    free(ctx->incomingClipboardTransfer.name);
+    free(ctx->incomingClipboardTransfer.data);
+    memset(&ctx->incomingClipboardTransfer, 0, sizeof(ctx->incomingClipboardTransfer));
+}
+
+static uint32_t clipboardFeatureFlagForItemType(uint8_t itemType) {
+    switch (itemType) {
+    case LI_CLIPBOARD_ITEM_TYPE_TEXT:
+        return LI_FF_CLIPBOARD_TEXT;
+    case LI_CLIPBOARD_ITEM_TYPE_IMAGE:
+        return LI_FF_CLIPBOARD_IMAGE;
+    default:
+        return 0;
+    }
+}
+
+static bool isClipboardExtensionSupported(PML_CONTROL_STREAM_CONTEXT ctx) {
+    return IS_SUNSHINE_CTX(ctx->connectionContext) &&
+           ctx->packetTypes[IDX_CLIPBOARD] != -1;
+}
+
+static bool isAnyClipboardFeatureSupportedByHost(PML_CONTROL_STREAM_CONTEXT ctx) {
+    return (SunshineFeatureFlags & (LI_FF_CLIPBOARD_TEXT |
+                                    LI_FF_CLIPBOARD_IMAGE)) != 0;
+}
+
+static bool isClipboardItemTypeSupportedByHost(PML_CONTROL_STREAM_CONTEXT ctx,
+                                               uint8_t itemType) {
+    uint32_t featureFlag = clipboardFeatureFlagForItemType(itemType);
+    return featureFlag != 0 &&
+           (SunshineFeatureFlags & featureFlag) != 0;
+}
+
+static uint64_t generateClipboardItemId(void) {
+    return (uint64_t)atomic_fetch_add_explicit(&sClipboardItemCounter, 1,
+                                               memory_order_relaxed);
+}
+
+static bool isClipboardTransferLengthValid(uint8_t itemType,
+                                           uint32_t totalLength) {
+    switch (itemType) {
+    case LI_CLIPBOARD_ITEM_TYPE_NONE:
+        return totalLength == 0;
+    case LI_CLIPBOARD_ITEM_TYPE_IMAGE:
+        return totalLength <= LI_CLIPBOARD_MAX_IMAGE_SIZE;
+    case LI_CLIPBOARD_ITEM_TYPE_TEXT:
+    default:
+        return true;
+    }
+}
+
+static char* allocClipboardStringFromBytes(PBYTE_BUFFER bb, uint16_t length) {
+    char* value = malloc((size_t)length + 1);
+    if (value == NULL) {
+        return NULL;
+    }
+
+    if (length != 0 && !BbGetBytes(bb, (uint8_t*)value, length)) {
+        free(value);
+        return NULL;
+    }
+
+    value[length] = '\0';
+    return value;
+}
+
+static int sendClipboardControlPacket(PML_CONTROL_STREAM_CONTEXT ctx,
+                                      const void* payload,
+                                      int payloadLength,
+                                      bool moreData) {
+    if (ctx == NULL ||
+            ctx->connectionContext == NULL ||
+            ctx->stopping ||
+            ctx->packetTypes == NULL) {
+        Limelog("Ignoring clipboard control packet because control stream is not ready\n");
+        return -1;
+    }
+
+    if (APP_VERSION_AT_LEAST_CTX(ctx->connectionContext, 5, 0, 0)) {
+        if (ctx->client == NULL ||
+                ctx->peer == NULL ||
+                ctx->peer->state != ENET_PEER_STATE_CONNECTED ||
+                (ctx->encryptedControlStream && ctx->encryptionCtx == NULL)) {
+            Limelog("Ignoring clipboard control packet because ENet control stream is unavailable\n");
+            return -1;
+        }
+    }
+    else if (ctx->ctlSock == INVALID_SOCKET ||
+             (ctx->encryptedControlStream && ctx->encryptionCtx == NULL)) {
+        Limelog("Ignoring clipboard control packet because TCP control stream is unavailable\n");
+        return -1;
+    }
+
+    if (!isClipboardExtensionSupported(ctx) ||
+            !isAnyClipboardFeatureSupportedByHost(ctx)) {
+        return LI_ERR_UNSUPPORTED;
+    }
+
+    if (!sendMessageAndForget(ctx,
+                              ctx->packetTypes[IDX_CLIPBOARD],
+                              (short)payloadLength,
+                              payload,
+                              CTRL_CHANNEL_GENERIC,
+                              ENET_PACKET_FLAG_RELIABLE,
+                              moreData)) {
+        return LastSocketFail();
+    }
+
+    return 0;
+}
+
+static void sendClipboardCancelBestEffort(PML_CONTROL_STREAM_CONTEXT ctx,
+                                          uint64_t itemId) {
+    char payload[1 + sizeof(uint64_t)];
+    BYTE_BUFFER bb;
+
+    BbInitializeWrappedBuffer(&bb, payload, 0, sizeof(payload), BYTE_ORDER_LITTLE);
+    BbPut8(&bb, LI_CLIPBOARD_MSG_ITEM_CANCEL);
+    BbPut64(&bb, itemId);
+
+    (void)sendClipboardControlPacket(ctx, payload, sizeof(payload), false);
+}
+
 // Cleans up control stream
 void destroyControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
     LC_ASSERT(ctx->stopping);
+    freeIncomingClipboardTransfer(ctx);
+    if (tls_CurrentControlStreamCtx == ctx) {
+        tls_CurrentControlStreamCtx = NULL;
+    }
     PltDestroyCryptoContext(ctx->encryptionCtx);
     PltDestroyCryptoContext(ctx->decryptionCtx);
+    ctx->encryptionCtx = NULL;
+    ctx->decryptionCtx = NULL;
+    ctx->connectionContext = NULL;
+    ctx->packetTypes = NULL;
+    ctx->payloadLengths = NULL;
+    ctx->preconstructedPayloads = NULL;
     PltCloseEvent(&ctx->idrFrameRequiredEvent);
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&ctx->invalidReferenceFrameTuples));
     freeBasicLbqList(LbqDestroyLinkedBlockingQueue(&ctx->frameFecStatusQueue));
@@ -730,12 +881,28 @@ static bool sendMessageEnet(PML_CONTROL_STREAM_CONTEXT ctx, short ptype, short p
         PNVCTL_ENCRYPTED_PACKET_HEADER encPacket;
         PNVCTL_ENET_PACKET_HEADER_V2 packet;
         char tempBuffer[256];
+        char* plaintextBuffer;
+        size_t plaintextLength;
+        bool plaintextBufferAllocated = false;
 
         enetPacket = enet_packet_create(NULL,
                                         sizeof(*encPacket) + AES_GCM_TAG_LENGTH + sizeof(*packet) + paylen,
                                         flags);
         if (enetPacket == NULL) {
             return false;
+        }
+
+        plaintextLength = sizeof(*packet) + paylen;
+        if (plaintextLength <= sizeof(tempBuffer)) {
+            plaintextBuffer = tempBuffer;
+        }
+        else {
+            plaintextBuffer = malloc(plaintextLength);
+            if (plaintextBuffer == NULL) {
+                enet_packet_destroy(enetPacket);
+                return false;
+            }
+            plaintextBufferAllocated = true;
         }
 
         // We (ab)use the enetMutex to protect currentEnetSequenceNumber and the cipherContext
@@ -748,8 +915,7 @@ static bool sendMessageEnet(PML_CONTROL_STREAM_CONTEXT ctx, short ptype, short p
         encPacket->seq = ctx->currentEnetSequenceNumber++;
 
         // Construct the plaintext data for encryption
-        LC_ASSERT(sizeof(*packet) + paylen < sizeof(tempBuffer));
-        packet = (PNVCTL_ENET_PACKET_HEADER_V2)tempBuffer;
+        packet = (PNVCTL_ENET_PACKET_HEADER_V2)plaintextBuffer;
         packet->type = ptype;
         packet->payloadLength = paylen;
         memcpy(&packet[1], payload, paylen);
@@ -758,8 +924,15 @@ static bool sendMessageEnet(PML_CONTROL_STREAM_CONTEXT ctx, short ptype, short p
         if (!encryptControlMessage(ctx, encPacket, packet)) {
             Limelog("Failed to encrypt control stream message\n");
             enet_packet_destroy(enetPacket);
+            if (plaintextBufferAllocated) {
+                free(plaintextBuffer);
+            }
             PltUnlockMutex(&ctx->enetMutex);
             return false;
+        }
+
+        if (plaintextBufferAllocated) {
+            free(plaintextBuffer);
         }
 
         // enetMutex still locked here
@@ -1134,6 +1307,211 @@ static void queueAsyncCallback(PML_CONTROL_STREAM_CONTEXT ctx, PNVCTL_ENET_PACKE
     }
 }
 
+static void handleClipboardPacket(PML_CONTROL_STREAM_CONTEXT ctx,
+                                  PNVCTL_ENET_PACKET_HEADER_V1 ctlHdr,
+                                  int packetLength) {
+    BYTE_BUFFER bb;
+    uint8_t kind;
+
+    BbInitializeWrappedBuffer(&bb, (char*)ctlHdr, sizeof(*ctlHdr),
+                              packetLength - sizeof(*ctlHdr), BYTE_ORDER_LITTLE);
+    if (!BbGet8(&bb, &kind)) {
+        Limelog("Clipboard packet missing message kind\n");
+        return;
+    }
+
+    switch (kind) {
+    case LI_CLIPBOARD_MSG_ITEM_START: {
+        uint8_t transferFlags;
+        uint8_t itemType;
+        uint8_t reserved;
+        uint64_t itemId;
+        uint64_t contentHash;
+        uint32_t totalLength;
+        uint16_t mimeTypeLength;
+        uint16_t nameLength;
+        char* mimeType = NULL;
+        char* name = NULL;
+        uint8_t* data = NULL;
+
+        if (!BbGet8(&bb, &transferFlags) ||
+                !BbGet8(&bb, &itemType) ||
+                !BbGet8(&bb, &reserved) ||
+                !BbGet64(&bb, &itemId) ||
+                !BbGet64(&bb, &contentHash) ||
+                !BbGet32(&bb, &totalLength) ||
+                !BbGet16(&bb, &mimeTypeLength) ||
+                !BbGet16(&bb, &nameLength)) {
+            Limelog("Clipboard ITEM_START header truncated\n");
+            return;
+        }
+
+        if (itemType != LI_CLIPBOARD_ITEM_TYPE_NONE &&
+                itemType != LI_CLIPBOARD_ITEM_TYPE_TEXT &&
+                itemType != LI_CLIPBOARD_ITEM_TYPE_IMAGE) {
+            Limelog("Clipboard ITEM_START with invalid type: %u\n", itemType);
+            return;
+        }
+
+        if (!isClipboardTransferLengthValid(itemType, totalLength)) {
+            Limelog("Clipboard ITEM_START exceeded configured size limits: type=%u length=%u\n",
+                    itemType, totalLength);
+            return;
+        }
+
+        mimeType = allocClipboardStringFromBytes(&bb, mimeTypeLength);
+        if (mimeType == NULL) {
+            Limelog("Clipboard ITEM_START failed to allocate mime type\n");
+            return;
+        }
+
+        name = allocClipboardStringFromBytes(&bb, nameLength);
+        if (name == NULL) {
+            Limelog("Clipboard ITEM_START failed to allocate item name\n");
+            free(mimeType);
+            return;
+        }
+
+        if (totalLength != 0) {
+            data = malloc(totalLength);
+            if (data == NULL) {
+                Limelog("Clipboard ITEM_START failed to allocate %u bytes\n",
+                        totalLength);
+                free(mimeType);
+                free(name);
+                return;
+            }
+        }
+
+        if (ctx->incomingClipboardTransfer.active) {
+            Limelog("Clipboard ITEM_START replaced unfinished item %" PRIu64 "\n",
+                    ctx->incomingClipboardTransfer.itemId);
+            freeIncomingClipboardTransfer(ctx);
+        }
+
+        ctx->incomingClipboardTransfer.active = true;
+        ctx->incomingClipboardTransfer.itemType = itemType;
+        ctx->incomingClipboardTransfer.transferFlags = transferFlags;
+        ctx->incomingClipboardTransfer.itemId = itemId;
+        ctx->incomingClipboardTransfer.contentHash = contentHash;
+        ctx->incomingClipboardTransfer.totalLength = totalLength;
+        ctx->incomingClipboardTransfer.receivedLength = 0;
+        ctx->incomingClipboardTransfer.mimeType = mimeType;
+        ctx->incomingClipboardTransfer.name = name;
+        ctx->incomingClipboardTransfer.data = data;
+        break;
+    }
+    case LI_CLIPBOARD_MSG_ITEM_CHUNK: {
+        uint8_t reserved;
+        uint16_t chunkLength;
+        uint64_t itemId;
+        uint32_t chunkOffset;
+        uint32_t newReceivedLength;
+
+        if (!BbGet8(&bb, &reserved) ||
+                !BbGet16(&bb, &chunkLength) ||
+                !BbGet64(&bb, &itemId) ||
+                !BbGet32(&bb, &chunkOffset)) {
+            Limelog("Clipboard ITEM_CHUNK header truncated\n");
+            return;
+        }
+
+        if (!ctx->incomingClipboardTransfer.active ||
+                ctx->incomingClipboardTransfer.itemId != itemId) {
+            Limelog("Clipboard ITEM_CHUNK without matching transfer: %" PRIu64 "\n",
+                    itemId);
+            return;
+        }
+
+        if (chunkOffset > ctx->incomingClipboardTransfer.totalLength ||
+                chunkLength > ctx->incomingClipboardTransfer.totalLength - chunkOffset) {
+            Limelog("Clipboard ITEM_CHUNK outside bounds: offset=%u length=%u total=%u\n",
+                    chunkOffset, chunkLength, ctx->incomingClipboardTransfer.totalLength);
+            freeIncomingClipboardTransfer(ctx);
+            return;
+        }
+
+        if (chunkLength != 0 &&
+                !BbGetBytes(&bb,
+                            ctx->incomingClipboardTransfer.data + chunkOffset,
+                            chunkLength)) {
+            Limelog("Clipboard ITEM_CHUNK payload truncated\n");
+            freeIncomingClipboardTransfer(ctx);
+            return;
+        }
+
+        newReceivedLength = chunkOffset + chunkLength;
+        if (newReceivedLength > ctx->incomingClipboardTransfer.receivedLength) {
+            ctx->incomingClipboardTransfer.receivedLength = newReceivedLength;
+        }
+        break;
+    }
+    case LI_CLIPBOARD_MSG_ITEM_END: {
+        uint64_t itemId;
+        LI_CLIPBOARD_ITEM item;
+
+        if (!BbGet64(&bb, &itemId)) {
+            Limelog("Clipboard ITEM_END truncated\n");
+            return;
+        }
+
+        if (!ctx->incomingClipboardTransfer.active ||
+                ctx->incomingClipboardTransfer.itemId != itemId) {
+            Limelog("Clipboard ITEM_END without matching transfer: %" PRIu64 "\n",
+                    itemId);
+            return;
+        }
+
+        if (ctx->incomingClipboardTransfer.receivedLength !=
+                ctx->incomingClipboardTransfer.totalLength) {
+            Limelog("Clipboard ITEM_END before transfer completion: %" PRIu64
+                    " (%u/%u)\n",
+                    itemId,
+                    ctx->incomingClipboardTransfer.receivedLength,
+                    ctx->incomingClipboardTransfer.totalLength);
+            freeIncomingClipboardTransfer(ctx);
+            return;
+        }
+
+        memset(&item, 0, sizeof(item));
+        item.type = ctx->incomingClipboardTransfer.itemType;
+        item.data = ctx->incomingClipboardTransfer.data;
+        item.length = ctx->incomingClipboardTransfer.totalLength;
+        item.mimeType = ctx->incomingClipboardTransfer.mimeType;
+        item.name = ctx->incomingClipboardTransfer.name;
+        item.itemId = ctx->incomingClipboardTransfer.itemId;
+        item.contentHash = ctx->incomingClipboardTransfer.contentHash;
+        item.flags = ctx->incomingClipboardTransfer.transferFlags;
+
+        ListenerCallbacks.clipboardItemReceived(&item);
+        freeIncomingClipboardTransfer(ctx);
+        break;
+    }
+    case LI_CLIPBOARD_MSG_ITEM_CANCEL: {
+        uint64_t itemId;
+
+        if (!BbGet64(&bb, &itemId)) {
+            Limelog("Clipboard ITEM_CANCEL truncated\n");
+            return;
+        }
+
+        if (ctx->incomingClipboardTransfer.active &&
+                (itemId == 0 || ctx->incomingClipboardTransfer.itemId == itemId)) {
+            freeIncomingClipboardTransfer(ctx);
+        }
+        break;
+    }
+    case LI_CLIPBOARD_MSG_BIND:
+    case LI_CLIPBOARD_MSG_UNBIND:
+    case LI_CLIPBOARD_MSG_SNAPSHOT_REQUEST:
+        Limelog("Ignoring unexpected host clipboard control message: %u\n", kind);
+        break;
+    default:
+        Limelog("Unknown clipboard control message kind: %u\n", kind);
+        break;
+    }
+}
+
 static void controlReceiveThreadFunc(void* context) {
     PML_CONTROL_STREAM_CONTEXT ctx = (PML_CONTROL_STREAM_CONTEXT)context;
     LiSetThreadConnectionContext(ctx->connectionContext);
@@ -1409,6 +1787,9 @@ static void controlReceiveThreadFunc(void* context) {
                 free(ctlHdr);
                 return;
             }
+            else if (ctlHdr->type == ctx->packetTypes[IDX_CLIPBOARD]) {
+                handleClipboardPacket(ctx, ctlHdr, packetLength);
+            }
 
             free(ctlHdr);
         }
@@ -1650,6 +2031,9 @@ static void requestIdrFrameFunc(void* context) {
 // Stops the control stream
 int stopControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
     ctx->stopping = true;
+    if (tls_CurrentControlStreamCtx == ctx) {
+        tls_CurrentControlStreamCtx = NULL;
+    }
     LbqSignalQueueShutdown(&ctx->invalidReferenceFrameTuples);
     LbqSignalQueueShutdown(&ctx->frameFecStatusQueue);
     LbqSignalQueueDrain(&ctx->asyncCallbackQueue);
@@ -1770,6 +2154,166 @@ bool LiGetEstimatedRttInfoCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t* estimate
 
 bool LiGetEstimatedRttInfo(uint32_t* estimatedRtt, uint32_t* estimatedRttVariance) {
     return LiGetEstimatedRttInfoCtx(LiGetEffectiveControlContext(), estimatedRtt, estimatedRttVariance);
+}
+
+static int sendSimpleClipboardCommand(PML_CONTROL_STREAM_CONTEXT ctx,
+                                      uint8_t command) {
+    uint8_t payload = command;
+    return sendClipboardControlPacket(ctx, &payload, sizeof(payload), false);
+}
+
+int LiBindClipboardSessionCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
+    return sendSimpleClipboardCommand(ctx, LI_CLIPBOARD_MSG_BIND);
+}
+
+int LiBindClipboardSession(void) {
+    return LiBindClipboardSessionCtx(LiGetEffectiveControlContext());
+}
+
+int LiUnbindClipboardSessionCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
+    return sendSimpleClipboardCommand(ctx, LI_CLIPBOARD_MSG_UNBIND);
+}
+
+int LiUnbindClipboardSession(void) {
+    return LiUnbindClipboardSessionCtx(LiGetEffectiveControlContext());
+}
+
+int LiRequestClipboardSnapshotCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
+    return sendSimpleClipboardCommand(ctx, LI_CLIPBOARD_MSG_SNAPSHOT_REQUEST);
+}
+
+int LiRequestClipboardSnapshot(void) {
+    return LiRequestClipboardSnapshotCtx(LiGetEffectiveControlContext());
+}
+
+int LiSendClipboardItemCtx(PML_CONTROL_STREAM_CONTEXT ctx,
+                           const LI_CLIPBOARD_ITEM* item) {
+    const char* mimeType;
+    const char* name;
+    uint16_t mimeTypeLength;
+    uint16_t nameLength;
+    uint64_t itemId;
+    uint64_t contentHash;
+    size_t startPayloadLength;
+    char* startPayload;
+    BYTE_BUFFER bb;
+    uint32_t offset;
+    int err;
+
+    if (item == NULL) {
+        return -1;
+    }
+
+    if (!isClipboardExtensionSupported(ctx)) {
+        return LI_ERR_UNSUPPORTED;
+    }
+
+    if (!isClipboardItemTypeSupportedByHost(ctx, item->type)) {
+        return LI_ERR_UNSUPPORTED;
+    }
+
+    if (item->length != 0 && item->data == NULL) {
+        return -1;
+    }
+
+    mimeType = item->mimeType;
+    if (mimeType == NULL) {
+        switch (item->type) {
+        case LI_CLIPBOARD_ITEM_TYPE_TEXT:
+            mimeType = "text/plain;charset=utf-8";
+            break;
+        case LI_CLIPBOARD_ITEM_TYPE_IMAGE:
+            mimeType = "image/png";
+            break;
+        default:
+            mimeType = "";
+            break;
+        }
+    }
+
+    name = item->name != NULL ? item->name : "";
+    mimeTypeLength = (uint16_t)strlen(mimeType);
+    nameLength = (uint16_t)strlen(name);
+    if (mimeTypeLength != strlen(mimeType) || nameLength != strlen(name)) {
+        return -1;
+    }
+
+    itemId = item->itemId != 0 ? item->itemId : generateClipboardItemId();
+    contentHash = item->contentHash;
+
+    startPayloadLength = 1 + 1 + 1 + 1 + sizeof(uint64_t) + sizeof(uint64_t) +
+                         sizeof(uint32_t) + sizeof(uint16_t) +
+                         sizeof(uint16_t) + mimeTypeLength + nameLength;
+    startPayload = malloc(startPayloadLength);
+    if (startPayload == NULL) {
+        return -1;
+    }
+
+    BbInitializeWrappedBuffer(&bb, startPayload, 0, (int)startPayloadLength,
+                              BYTE_ORDER_LITTLE);
+    BbPut8(&bb, LI_CLIPBOARD_MSG_ITEM_START);
+    BbPut8(&bb, 0);
+    BbPut8(&bb, item->type);
+    BbPut8(&bb, 0);
+    BbPut64(&bb, itemId);
+    BbPut64(&bb, contentHash);
+    BbPut32(&bb, item->length);
+    BbPut16(&bb, mimeTypeLength);
+    BbPut16(&bb, nameLength);
+    BbPutBytes(&bb, (const uint8_t*)mimeType, mimeTypeLength);
+    BbPutBytes(&bb, (const uint8_t*)name, nameLength);
+
+    err = sendClipboardControlPacket(ctx, startPayload, (int)startPayloadLength,
+                                     true);
+    free(startPayload);
+    if (err != 0) {
+        return err;
+    }
+
+    for (offset = 0; offset < item->length; offset += LI_CLIPBOARD_MAX_CHUNK_SIZE) {
+        uint16_t chunkLength =
+            (uint16_t)MIN((uint32_t)LI_CLIPBOARD_MAX_CHUNK_SIZE,
+                          item->length - offset);
+        size_t chunkPayloadLength =
+            1 + 1 + sizeof(uint16_t) + sizeof(uint64_t) + sizeof(uint32_t) +
+            chunkLength;
+        char* chunkPayload = malloc(chunkPayloadLength);
+        if (chunkPayload == NULL) {
+            sendClipboardCancelBestEffort(ctx, itemId);
+            return -1;
+        }
+
+        BbInitializeWrappedBuffer(&bb, chunkPayload, 0, (int)chunkPayloadLength,
+                                  BYTE_ORDER_LITTLE);
+        BbPut8(&bb, LI_CLIPBOARD_MSG_ITEM_CHUNK);
+        BbPut8(&bb, 0);
+        BbPut16(&bb, chunkLength);
+        BbPut64(&bb, itemId);
+        BbPut32(&bb, offset);
+        BbPutBytes(&bb, item->data + offset, chunkLength);
+
+        err = sendClipboardControlPacket(ctx, chunkPayload,
+                                         (int)chunkPayloadLength, true);
+        free(chunkPayload);
+        if (err != 0) {
+            sendClipboardCancelBestEffort(ctx, itemId);
+            return err;
+        }
+    }
+
+    {
+        char endPayload[1 + sizeof(uint64_t)];
+        BbInitializeWrappedBuffer(&bb, endPayload, 0, sizeof(endPayload),
+                                  BYTE_ORDER_LITTLE);
+        BbPut8(&bb, LI_CLIPBOARD_MSG_ITEM_END);
+        BbPut64(&bb, itemId);
+        return sendClipboardControlPacket(ctx, endPayload, sizeof(endPayload),
+                                          false);
+    }
+}
+
+int LiSendClipboardItem(const LI_CLIPBOARD_ITEM* item) {
+    return LiSendClipboardItemCtx(LiGetEffectiveControlContext(), item);
 }
 
 // Starts the control stream
@@ -2125,4 +2669,3 @@ bool LiGetHdrMetadataCtx(PML_CONTROL_STREAM_CONTEXT ctx, PSS_HDR_METADATA metada
 bool LiGetHdrMetadata(PSS_HDR_METADATA metadata) {
     return LiGetHdrMetadataCtx(LiGetEffectiveControlContext(), metadata);
 }
-

@@ -1,5 +1,9 @@
 #include "Limelight-internal.h"
 
+#ifdef SunshineFeatureFlags
+#undef SunshineFeatureFlags
+#endif
+
 #define ENET_INTERNAL_TIMEOUT_MS 100
 
 // This function wraps enet_host_service() and hides the fact that it must be
@@ -171,4 +175,11 @@ void LiInitializeServerInformation(PSERVER_INFORMATION serverInfo) {
 
 uint64_t LiGetMillis(void) { return PltGetMillis(); }
 
-uint32_t LiGetHostFeatureFlags(void) { return SunshineFeatureFlags; }
+uint32_t LiGetHostFeatureFlags(void) {
+  PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+  return ctx != NULL ? ctx->SunshineFeatureFlags : 0;
+}
+
+uint32_t LiGetHostFeatureFlagsCtx(PML_CONNECTION_CONTEXT ctx) {
+  return ctx != NULL ? ctx->SunshineFeatureFlags : 0;
+}
