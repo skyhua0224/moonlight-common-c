@@ -427,12 +427,24 @@ static uint32_t clipboardFeatureFlagForItemType(uint8_t itemType) {
     }
 }
 
+static bool isClipboardControlContextReady(PML_CONTROL_STREAM_CONTEXT ctx) {
+    return ctx != NULL &&
+           ctx->connectionContext != NULL &&
+           ctx->packetTypes != NULL &&
+           !ctx->stopping;
+}
+
 static bool isClipboardExtensionSupported(PML_CONTROL_STREAM_CONTEXT ctx) {
-    return IS_SUNSHINE_CTX(ctx->connectionContext) &&
+    return isClipboardControlContextReady(ctx) &&
+           IS_SUNSHINE_CTX(ctx->connectionContext) &&
            ctx->packetTypes[IDX_CLIPBOARD] != -1;
 }
 
 static bool isAnyClipboardFeatureSupportedByHost(PML_CONTROL_STREAM_CONTEXT ctx) {
+    if (!isClipboardControlContextReady(ctx)) {
+        return false;
+    }
+
     return (SunshineFeatureFlags & (LI_FF_CLIPBOARD_TEXT |
                                     LI_FF_CLIPBOARD_IMAGE)) != 0;
 }
@@ -440,6 +452,10 @@ static bool isAnyClipboardFeatureSupportedByHost(PML_CONTROL_STREAM_CONTEXT ctx)
 static bool isClipboardItemTypeSupportedByHost(PML_CONTROL_STREAM_CONTEXT ctx,
                                                uint8_t itemType) {
     uint32_t featureFlag = clipboardFeatureFlagForItemType(itemType);
+    if (!isClipboardControlContextReady(ctx)) {
+        return false;
+    }
+
     return featureFlag != 0 &&
            (SunshineFeatureFlags & featureFlag) != 0;
 }
