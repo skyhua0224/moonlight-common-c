@@ -864,6 +864,10 @@ int LiUnbindClipboardSession(void);
 int LiRequestClipboardSnapshot(void);
 int LiSendClipboardItem(const LI_CLIPBOARD_ITEM *item);
 
+// Sends an opaque Sunshine clipboard v1 payload over control packet 0x5508.
+// The payload is forwarded verbatim to the user-session clipboard agent.
+int LiSendClipboardData(const void *payload, int length);
+
 // Button flags
 #define A_FLAG 0x1000
 #define B_FLAG 0x2000

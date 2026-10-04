@@ -2332,6 +2332,29 @@ int LiSendClipboardItem(const LI_CLIPBOARD_ITEM* item) {
     return LiSendClipboardItemCtx(LiGetEffectiveControlContext(), item);
 }
 
+// Sends a raw Sunshine clipboard v1 payload over control packet 0x5508.
+// common-c deliberately does not parse this higher-level payload.
+int LiSendClipboardData(const void* payload, int length) {
+    if (payload == NULL || length <= 0 || length > 65535) {
+        return -1;
+    }
+
+    if (AppVersionQuad[0] < 5 || packetTypes == NULL || packetTypes[IDX_CLIPBOARD] == -1) {
+        return -2;
+    }
+
+    if (peer == NULL || peer->state != ENET_PEER_STATE_CONNECTED) {
+        return -3;
+    }
+
+    if (!sendMessageAndForget(packetTypes[IDX_CLIPBOARD], (short)length, payload,
+                              CTRL_CHANNEL_GENERIC, ENET_PACKET_FLAG_RELIABLE, false)) {
+        return -4;
+    }
+
+    return 0;
+}
+
 // Starts the control stream
 int startControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
     int err;
