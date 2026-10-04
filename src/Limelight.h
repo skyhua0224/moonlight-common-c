@@ -515,6 +515,11 @@ typedef void (*ConnListenerConnectionStatusUpdate)(int connectionStatus);
 #define LI_CLIPBOARD_ITEM_TYPE_TEXT 0x01
 #define LI_CLIPBOARD_ITEM_TYPE_IMAGE 0x02
 
+// Opaque clipboard-agent v1 payload kinds carried by LiSendClipboardData().
+#define LI_CLIPBOARD_KIND_TEXT 0x01
+#define LI_CLIPBOARD_KIND_PNG  0x02
+#define LI_CLIPBOARD_KIND_REF  0x03
+
 // Clipboard item flags.
 #define LI_CLIPBOARD_ITEM_FLAG_SNAPSHOT 0x01
 
@@ -538,6 +543,11 @@ typedef struct _LI_CLIPBOARD_ITEM {
 // callback invocation.
 typedef void (*ConnListenerClipboardItemReceived)(
     const LI_CLIPBOARD_ITEM *item);
+
+// Raw Sunshine clipboard v1 payload forwarded by the 0x5508 bridge. The
+// payload is owned by moonlight-common-c and is valid only during the callback.
+typedef void (*ConnListenerClipboardDataReceived)(const uint8_t *data,
+                                                  uint32_t length);
 
 // This callback is invoked to notify the client of a change in HDR mode on
 // the host. The client will probably want to update the local display mode
@@ -590,6 +600,7 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
   ConnListenerRumble rumble;
   ConnListenerConnectionStatusUpdate connectionStatusUpdate;
   ConnListenerClipboardItemReceived clipboardItemReceived;
+  ConnListenerClipboardDataReceived clipboardDataReceived;
   ConnListenerSetHdrMode setHdrMode;
   ConnListenerRumbleTriggers rumbleTriggers;
   ConnListenerSetMotionEventState setMotionEventState;
@@ -863,6 +874,10 @@ int LiBindClipboardSession(void);
 int LiUnbindClipboardSession(void);
 int LiRequestClipboardSnapshot(void);
 int LiSendClipboardItem(const LI_CLIPBOARD_ITEM *item);
+
+// Sends an opaque Sunshine clipboard v1 payload over control packet 0x5508.
+// The payload is forwarded verbatim to the user-session clipboard agent.
+int LiSendClipboardData(const void *payload, int length);
 
 // Button flags
 #define A_FLAG 0x1000

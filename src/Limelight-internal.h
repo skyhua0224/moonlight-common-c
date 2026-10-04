@@ -320,6 +320,8 @@ int LiUnbindClipboardSessionCtx(PML_CONTROL_STREAM_CONTEXT ctx);
 int LiRequestClipboardSnapshotCtx(PML_CONTROL_STREAM_CONTEXT ctx);
 int LiSendClipboardItemCtx(PML_CONTROL_STREAM_CONTEXT ctx,
                            const LI_CLIPBOARD_ITEM* item);
+int LiSendClipboardDataCtx(PML_CONTROL_STREAM_CONTEXT ctx,
+                           const void* payload, int length);
 
 // Microphone stream context (multi-stream scaffolding)
 typedef struct _ML_MICROPHONE_STREAM_CONTEXT {

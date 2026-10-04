@@ -37,6 +37,7 @@ static void fakeClLogMessage(const char* format, ...) {}
 static void fakeClRumble(unsigned short controllerNumber, unsigned short lowFreqMotor, unsigned short highFreqMotor) {}
 static void fakeClConnectionStatusUpdate(int connectionStatus) {}
 static void fakeClClipboardItemReceived(const LI_CLIPBOARD_ITEM* item) {}
+static void fakeClClipboardDataReceived(const uint8_t* data, uint32_t length) {}
 static void fakeClSetHdrMode(bool enabled) {}
 static void fakeClRumbleTriggers(uint16_t controllerNumber, uint16_t leftTriggerMotor, uint16_t rightTriggerMotor) {}
 static void fakeClSetMotionEventState(uint16_t controllerNumber, uint8_t motionType, uint16_t reportRateHz) {}
@@ -53,6 +54,7 @@ static CONNECTION_LISTENER_CALLBACKS fakeClCallbacks = {
     .rumble = fakeClRumble,
     .connectionStatusUpdate = fakeClConnectionStatusUpdate,
     .clipboardItemReceived = fakeClClipboardItemReceived,
+    .clipboardDataReceived = fakeClClipboardDataReceived,
     .setHdrMode = fakeClSetHdrMode,
     .rumbleTriggers = fakeClRumbleTriggers,
     .setMotionEventState = fakeClSetMotionEventState,
@@ -135,6 +137,9 @@ void fixupMissingCallbacks(PDECODER_RENDERER_CALLBACKS* drCallbacks, PAUDIO_REND
         }
         if ((*clCallbacks)->clipboardItemReceived == NULL) {
             (*clCallbacks)->clipboardItemReceived = fakeClClipboardItemReceived;
+        }
+        if ((*clCallbacks)->clipboardDataReceived == NULL) {
+            (*clCallbacks)->clipboardDataReceived = fakeClClipboardDataReceived;
         }
         if ((*clCallbacks)->setHdrMode == NULL) {
             (*clCallbacks)->setHdrMode = fakeClSetHdrMode;
