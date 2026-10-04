@@ -1336,6 +1336,29 @@ static void handleClipboardPacket(PML_CONTROL_STREAM_CONTEXT ctx,
         return;
     }
 
+    // Foundation/Vplus clipboard agents use an opaque v1 payload beginning
+    // with version=1 and a kind byte. Keep this before the legacy item switch:
+    // legacy control messages start at 0x01 but are shorter than a v1 frame.
+    if (kind == 1 && packetLength - (int)sizeof(*ctlHdr) >= 10) {
+        uint8_t rawKind = 0;
+        uint32_t rawToken = 0;
+        uint32_t rawLength = 0;
+        BYTE_BUFFER raw = bb;
+        if (BbGet8(&raw, &rawKind) &&
+            (rawKind == LI_CLIPBOARD_KIND_TEXT ||
+             rawKind == LI_CLIPBOARD_KIND_PNG ||
+             rawKind == LI_CLIPBOARD_KIND_REF) &&
+            BbGet32(&raw, &rawToken) &&
+            BbGet32(&raw, &rawLength) &&
+            rawLength <= (uint32_t)(packetLength - (int)sizeof(*ctlHdr) - 10) &&
+            ListenerCallbacks.clipboardDataReceived != NULL) {
+            ListenerCallbacks.clipboardDataReceived(
+                (const uint8_t *)ctlHdr + sizeof(*ctlHdr),
+                (uint32_t)(packetLength - (int)sizeof(*ctlHdr));
+            return;
+        }
+    }
+
     switch (kind) {
     case LI_CLIPBOARD_MSG_ITEM_START: {
         uint8_t transferFlags;
