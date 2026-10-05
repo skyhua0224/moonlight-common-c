@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "DynamicHdr.h"
 
 // Macros to redirect global access to context
 #define AppVersionQuad (ctx->AppVersionQuad)
@@ -381,6 +382,17 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         }
         else {
             err |= addAttributeString(&optionHead, "x-ss-video[0].chromaSamplingType", "0");
+        }
+
+        // Opt-in Sunshine dynamic HDR negotiation. Legacy clients leave all
+        // fields zero, preserving the host's historical HDR10+ behavior.
+        if (StreamConfig.dynamicHdrCaps != 0 || StreamConfig.dynamicHdrPreference != 0) {
+            snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.dynamicHdrCaps);
+            err |= addAttributeString(&optionHead, "x-ss-video[0].dynamicHdrCaps", payloadStr);
+            snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.dolbyVisionDirectSurface ? 1 : 0);
+            err |= addAttributeString(&optionHead, "x-ss-video[0].dolbyVisionDirectSurface", payloadStr);
+            snprintf(payloadStr, sizeof(payloadStr), "%d", StreamConfig.dynamicHdrPreference);
+            err |= addAttributeString(&optionHead, "x-ss-video[0].dynamicHdrPreference", payloadStr);
         }
     }
 

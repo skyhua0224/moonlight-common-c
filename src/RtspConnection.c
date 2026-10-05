@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "DynamicHdr.h"
 #include "Rtsp.h"
 
 #define RTSP_CONNECT_TIMEOUT_SEC 10
@@ -823,6 +824,43 @@ static bool sendVideoAnnounce(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEX
   }
 
   return ret;
+}
+
+static void parseDynamicHdrNegotiation(PML_CONNECTION_CONTEXT ctx, PRTSP_MESSAGE response) {
+    const char *format = getOptionContent(response->options, "X-SS-Dynamic-HDR");
+    if (format == NULL) {
+        ctx->NegotiatedDynamicHdrFormat = DYNAMIC_HDR_FORMAT_NONE;
+        ctx->NegotiatedDynamicHdrFallback = DYNAMIC_HDR_FALLBACK_NONE;
+        return;
+    }
+
+    ctx->NegotiatedDynamicHdrFormat = (int)strtol(format, NULL, 10);
+    const char *fallback = getOptionContent(response->options, "X-SS-Dynamic-HDR-Fallback");
+    if (fallback == NULL) {
+        ctx->NegotiatedDynamicHdrFallback = DYNAMIC_HDR_FALLBACK_NONE;
+    }
+    else if (strcmp(fallback, "codec_unsupported") == 0) {
+        ctx->NegotiatedDynamicHdrFallback = DYNAMIC_HDR_FALLBACK_CODEC_UNSUPPORTED;
+    }
+    else if (strcmp(fallback, "colorspace_unsupported") == 0) {
+        ctx->NegotiatedDynamicHdrFallback = DYNAMIC_HDR_FALLBACK_COLORSPACE_UNSUPPORTED;
+    }
+    else if (strcmp(fallback, "client_caps_missing") == 0) {
+        ctx->NegotiatedDynamicHdrFallback = DYNAMIC_HDR_FALLBACK_CLIENT_CAPS_MISSING;
+    }
+    else if (strcmp(fallback, "direct_surface_missing") == 0) {
+        ctx->NegotiatedDynamicHdrFallback = DYNAMIC_HDR_FALLBACK_DIRECT_SURFACE_MISSING;
+    }
+    else if (strcmp(fallback, "preference") == 0) {
+        ctx->NegotiatedDynamicHdrFallback = DYNAMIC_HDR_FALLBACK_PREFERENCE;
+    }
+    else {
+        ctx->NegotiatedDynamicHdrFallback = DYNAMIC_HDR_FALLBACK_NONE;
+    }
+
+    Limelog("Dynamic HDR negotiated: format=%d fallback=%d\n",
+            ctx->NegotiatedDynamicHdrFormat,
+            ctx->NegotiatedDynamicHdrFallback);
 }
 
 static bool isDelimitedFormat(const char *paramStr) {
@@ -1748,6 +1786,8 @@ int performRtspHandshakeCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serv
       ret = response.message.response.statusCode;
       goto Exit;
     }
+
+    parseDynamicHdrNegotiation(ctx, &response);
 
     freeMessage(&response);
   }

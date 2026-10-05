@@ -509,6 +509,8 @@ typedef struct _ML_CONNECTION_CONTEXT {
     DECODER_RENDERER_CALLBACKS VideoCallbacks;
     AUDIO_RENDERER_CALLBACKS AudioCallbacks;
     int NegotiatedVideoFormat;
+    int NegotiatedDynamicHdrFormat;
+    int NegotiatedDynamicHdrFallback;
     volatile bool ConnectionInterrupted;
     bool HighQualitySurroundSupported;
     bool HighQualitySurroundEnabled;

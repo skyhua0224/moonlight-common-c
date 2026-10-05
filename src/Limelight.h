@@ -121,11 +121,22 @@ typedef struct _STREAM_CONFIGURATION {
   // and DYNAMIC_RANGE_MODE_HLG for HLG. When set to an unsupported value, the
   // client will fall back to HDR10 PQ for HDR streams.
   int dynamicRangeMode;
+
+  // Sunshine dynamic HDR negotiation. These fields remain zero for legacy
+  // clients. macOS Enhanced advertises only formats it can present end to end.
+  int dynamicHdrCaps;
+  int dolbyVisionDirectSurface;
+  int dynamicHdrPreference;
 } STREAM_CONFIGURATION, *PSTREAM_CONFIGURATION;
 
 // Use this function to zero the stream configuration when allocated on the
 // stack or heap
 void LiInitializeStreamConfiguration(PSTREAM_CONFIGURATION streamConfig);
+
+// Dynamic HDR selected by a Sunshine host in the RTSP ANNOUNCE response.
+// Returns DYNAMIC_HDR_FORMAT_NONE when the host has no extension.
+int LiGetNegotiatedDynamicHdrFormat(void);
+int LiGetNegotiatedDynamicHdrFallback(void);
 
 // These identify codec configuration data in the buffer lists
 // of frames identified as IDR frames for H.264 and HEVC formats.

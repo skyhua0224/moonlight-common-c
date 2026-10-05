@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "DynamicHdr.h"
 
 #ifdef SunshineFeatureFlags
 #undef SunshineFeatureFlags
@@ -182,4 +183,14 @@ uint32_t LiGetHostFeatureFlags(void) {
 
 uint32_t LiGetHostFeatureFlagsCtx(PML_CONNECTION_CONTEXT ctx) {
   return ctx != NULL ? ctx->SunshineFeatureFlags : 0;
+}
+
+int LiGetNegotiatedDynamicHdrFormat(void) {
+  PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+  return ctx != NULL ? ctx->NegotiatedDynamicHdrFormat : DYNAMIC_HDR_FORMAT_NONE;
+}
+
+int LiGetNegotiatedDynamicHdrFallback(void) {
+  PML_CONNECTION_CONTEXT ctx = LiGetEffectiveConnectionContext();
+  return ctx != NULL ? ctx->NegotiatedDynamicHdrFallback : DYNAMIC_HDR_FALLBACK_NONE;
 }
