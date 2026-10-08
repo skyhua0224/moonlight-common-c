@@ -75,8 +75,8 @@ extern int AppVersionQuad[4];
 // Client feature flags for x-ml-general.featureFlags SDP attribute
 #define ML_FF_FEC_STATUS 0x01 // Client sends SS_FRAME_FEC_STATUS for frame losses
 #define ML_FF_SESSION_ID_V1 0x02 // Client supports X-SS-Ping-Payload and X-SS-Connect-Data
-#define ML_FF_CLIPBOARD_TEXT 0x04 // Client supports clipboard text sync
-#define ML_FF_CLIPBOARD_IMAGE 0x08 // Client supports clipboard image sync
+#define ML_FF_DS5_HAPTICS_PCM 0x04 // Foundation authored PCM
+#define ML_FF_DS5_HAPTICS_IR_V2 0x08 // Foundation analyzed stereo haptics
 
 // Clipboard control stream packet type and payload kinds used by the Sunshine
 // clipboard sync extension.
@@ -240,9 +240,9 @@ typedef struct _ML_AUDIO_STREAM_CONTEXT {
         bool pingThreadStarted;
         bool receivedDataFromPeer;
         uint64_t firstReceiveTime;
-#ifdef LC_DEBUG
+        // Embedded in ML_CONNECTION_CONTEXT and shared with application code.
+        // Debug options must never change its layout across translation units.
         uint8_t opusHeaderByte;
-#endif
 } ML_AUDIO_STREAM_CONTEXT, *PML_AUDIO_STREAM_CONTEXT;
 
 int initializeAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext);
@@ -659,6 +659,8 @@ int startInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx);
 int stopInputStreamCtx(PML_INPUT_STREAM_CONTEXT ctx);
 
 // Debug helpers (ABI validation)
+bool LiIsConnectionContextLayoutCompatible(uint32_t size, uint32_t controlOffset,
+                                          uint32_t inputOffset, uint32_t stageOffset);
 uint32_t LiGetInputContextStructSize(void);
 uint32_t LiGetInputContextOffsetInitialized(void);
 uint32_t LiGetInputContextOffsetConnectionContext(void);

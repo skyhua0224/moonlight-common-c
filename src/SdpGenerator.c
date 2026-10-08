@@ -326,9 +326,13 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
     if (IS_SUNSHINE()) {
         // Send client feature flags to Sunshine hosts
         uint32_t moonlightFeatureFlags = ML_FF_FEC_STATUS |
-                                         ML_FF_SESSION_ID_V1 |
-                                         ML_FF_CLIPBOARD_TEXT |
-                                         ML_FF_CLIPBOARD_IMAGE;
+                                         ML_FF_SESSION_ID_V1;
+        if (ListenerCallbacks.ds5HapticsPcm != NULL) {
+            moonlightFeatureFlags |= ML_FF_DS5_HAPTICS_PCM;
+        }
+        if (ListenerCallbacks.ds5HapticsIrV2 != NULL) {
+            moonlightFeatureFlags |= ML_FF_DS5_HAPTICS_IR_V2;
+        }
         snprintf(payloadStr, sizeof(payloadStr), "%u", moonlightFeatureFlags);
         err |= addAttributeString(&optionHead, "x-ml-general.featureFlags", payloadStr);
 

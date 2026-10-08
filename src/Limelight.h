@@ -601,6 +601,47 @@ typedef void (*ConnListenerSetControllerLED)(uint16_t controllerNumber,
 // resolution accordingly.
 typedef void(*ConnListenerResolutionChanged)(uint32_t width, uint32_t height);
 
+// Authored DualSense haptics captured from the host's virtual USB audio
+// endpoint. PCM is signed 16-bit little-endian, interleaved left/right.
+#define LI_DS5_HAPTICS_PCM_FLAG_STREAM_START  0x01
+#define LI_DS5_HAPTICS_PCM_FLAG_STREAM_END    0x02
+#define LI_DS5_HAPTICS_PCM_FLAG_DISCONTINUITY 0x04
+typedef struct _LI_DS5_HAPTICS_PCM_FRAME {
+  uint8_t flags;
+  uint16_t controllerNumber;
+  uint32_t sequenceNumber;
+  uint64_t presentationTimeUs;
+  uint32_t sampleRate;
+  uint16_t frameCount;
+  uint8_t channelCount;
+  uint8_t bitsPerSample;
+  const uint8_t* pcmData;
+  uint32_t pcmDataLength;
+} LI_DS5_HAPTICS_PCM_FRAME, *PLI_DS5_HAPTICS_PCM_FRAME;
+typedef void(*ConnListenerDs5HapticsPcm)(const LI_DS5_HAPTICS_PCM_FRAME* frame);
+
+// Foundation authored haptics IR v2: stereo actuator envelope, spectral and
+// transient information, not the game audio downlink (qiin2333 protocol).
+#define LI_DS5_HAPTICS_IR_FLAG_DISCONTINUITY 0x01
+#define LI_DS5_HAPTICS_IR_FLAG_PARTIAL       0x02
+#define LI_DS5_HAPTICS_IR_FLAG_STREAM_END    0x04
+#define LI_DS5_HAPTICS_IR_FLAG_SILENT        0x08
+typedef struct _LI_DS5_HAPTICS_IR_LANE_V2 {
+    float rmsAmplitude, peakAmplitude, transientStrength, lowBandRatio;
+    float zeroCrossingRateHz;
+} LI_DS5_HAPTICS_IR_LANE_V2;
+typedef struct _LI_DS5_HAPTICS_IR_FRAME_V2 {
+    uint8_t flags;
+    uint16_t controllerNumber;
+    uint32_t sourceSequenceNumber;
+    uint64_t timestampUs;
+    uint32_t sourceFrameCount;
+    LI_DS5_HAPTICS_IR_LANE_V2 lanes[2];
+    float laneCorrelation;
+} LI_DS5_HAPTICS_IR_FRAME_V2;
+typedef void(*ConnListenerDs5HapticsIrV2)(const LI_DS5_HAPTICS_IR_FRAME_V2* frame);
+
+
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
   ConnListenerStageStarting stageStarting;
   ConnListenerStageComplete stageComplete;
@@ -617,6 +658,8 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
   ConnListenerSetMotionEventState setMotionEventState;
   ConnListenerSetControllerLED setControllerLED;
   ConnListenerSetAdaptiveTriggers setAdaptiveTriggers;
+  ConnListenerDs5HapticsPcm ds5HapticsPcm;
+  ConnListenerDs5HapticsIrV2 ds5HapticsIrV2;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the
@@ -979,6 +1022,7 @@ int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
   0x40 // Reports battery state via LiSendControllerBatteryEvent()
 #define LI_CCAP_RGB_LED                                                        \
   0x80 // Can set RGB LED state via ConnListenerSetControllerLED()
+#define LI_CCAP_DS5_HAPTICS_PCM 0x200 // Physical stereo actuator PCM endpoint
 int LiSendControllerArrivalEvent(uint8_t controllerNumber,
                                  uint16_t activeGamepadMask, uint8_t type,
                                  uint32_t supportedButtonFlags,

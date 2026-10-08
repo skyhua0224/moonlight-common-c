@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include <stddef.h>
 
 #ifdef RemoteAddrString
 #undef RemoteAddrString
@@ -107,6 +108,14 @@ void LiSetThreadConnectionContext(PML_CONNECTION_CONTEXT ctx) {
 
 PML_CONNECTION_CONTEXT LiGetThreadConnectionContext(void) {
     return tls_CurrentConnectionContext;
+}
+
+bool LiIsConnectionContextLayoutCompatible(uint32_t size, uint32_t controlOffset,
+                                          uint32_t inputOffset, uint32_t stageOffset) {
+    return size == sizeof(ML_CONNECTION_CONTEXT) &&
+           controlOffset == offsetof(ML_CONNECTION_CONTEXT, controlContext) &&
+           inputOffset == offsetof(ML_CONNECTION_CONTEXT, inputContext) &&
+           stageOffset == offsetof(ML_CONNECTION_CONTEXT, stage);
 }
 
     PML_CONNECTION_CONTEXT LiGetGlobalConnectionContextPtr(void) {

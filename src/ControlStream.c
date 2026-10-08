@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "Ds5HapticsStream.h"
 
 #ifdef StreamConfig
 #undef StreamConfig
@@ -139,6 +140,14 @@ static __thread PML_CONTROL_STREAM_CONTEXT tls_CurrentControlStreamCtx = NULL;
 
 static atomic_uint_fast64_t sClipboardItemCounter = 1;
 
+static void dispatchDs5HapticsPcm(const LI_DS5_HAPTICS_PCM_FRAME* frame,
+                                  void* context) {
+    ConnListenerDs5HapticsPcm callback = (ConnListenerDs5HapticsPcm)context;
+    if (callback != NULL) {
+        callback(frame);
+    }
+}
+
 static bool sendMessageAndForget(PML_CONTROL_STREAM_CONTEXT ctx, short ptype,
                                  short paylen, const void* payload,
                                  uint8_t channelId, uint32_t flags,
@@ -163,6 +172,8 @@ static bool sendMessageAndForget(PML_CONTROL_STREAM_CONTEXT ctx, short ptype,
 #define IDX_SET_RGB_LED 11
 #define IDX_DS_ADAPTIVE_TRIGGERS 12
 #define IDX_CLIPBOARD 13
+#define IDX_DS5_HAPTICS_PCM 14
+#define IDX_DS5_HAPTICS_IR_V2 15
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
@@ -181,6 +192,9 @@ static const short packetTypesGen3[] = {
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
     -1,     // Clipboard sync (unused)
+    -1,     // DualSense authored haptics (unused)
+    -1,     // Reserved unused feedback slot
+    -1,     // Reserved unused feedback slot
 };
 static const short packetTypesGen4[] = {
     0x0606, // Request IDR frame
@@ -196,6 +210,9 @@ static const short packetTypesGen4[] = {
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
     -1,     // Clipboard sync (unused)
+    -1,     // DualSense authored haptics (unused)
+    -1,     // Reserved unused feedback slot
+    -1,     // Reserved unused feedback slot
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -211,6 +228,9 @@ static const short packetTypesGen5[] = {
     -1,     // Set motion event (unused)
     -1,     // Set RGB LED (unused)
     -1,     // Clipboard sync (unused)
+    -1,     // DualSense authored haptics (unused)
+    -1,     // Reserved unused feedback slot
+    -1,     // Reserved unused feedback slot
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -227,6 +247,8 @@ static const short packetTypesGen7[] = {
     -1,     // Set RGB LED (unused)
     -1,     // Set Adaptive Triggers (unused)
     SS_CLIPBOARD_PTYPE, // Clipboard sync (Sunshine protocol extension)
+    0x550A, // DualSense authored haptics PCM (Sunshine protocol extension)
+    0x550B, // Foundation authored haptics IR v2
 };
 static const short packetTypesGen7Enc[] = {
     0x0302, // Request IDR frame
@@ -243,6 +265,8 @@ static const short packetTypesGen7Enc[] = {
     0x5502, // Set RGB LED (Sunshine protocol extension)
     0x5503, // Set Adaptive Triggers (Sunshine protocol extension)
     SS_CLIPBOARD_PTYPE, // Clipboard sync (Sunshine protocol extension)
+    0x550A, // DualSense authored haptics PCM (Sunshine protocol extension)
+    0x550B, // Foundation authored haptics IR v2
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -1828,6 +1852,22 @@ static void controlReceiveThreadFunc(void* context) {
             }
             else if (ctlHdr->type == ctx->packetTypes[IDX_CLIPBOARD]) {
                 handleClipboardPacket(ctx, ctlHdr, packetLength);
+            }
+            else if (ctlHdr->type == ctx->packetTypes[IDX_DS5_HAPTICS_IR_V2]) {
+                if (!processDs5HapticsIrStreamPacket((const uint8_t *)(ctlHdr + 1),
+                         packetLength - (int)sizeof(*ctlHdr), ListenerCallbacks.ds5HapticsIrV2)) {
+                    Limelog("Rejected malformed or unrequested DS5 IR v2 packet\n");
+                }
+            }
+            else if (ctlHdr->type == ctx->packetTypes[IDX_DS5_HAPTICS_PCM]) {
+                if (ListenerCallbacks.ds5HapticsPcm != NULL &&
+                    packetLength > (int)sizeof(*ctlHdr)) {
+                    processDs5HapticsStreamPacket(
+                        (const uint8_t *)(ctlHdr + 1),
+                        packetLength - (int)sizeof(*ctlHdr),
+                        dispatchDs5HapticsPcm,
+                        (void *)ListenerCallbacks.ds5HapticsPcm);
+                }
             }
 
             free(ctlHdr);
