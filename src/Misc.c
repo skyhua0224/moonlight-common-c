@@ -181,6 +181,16 @@ void LiSetRemoteTextContextCallback(ConnListenerRemoteTextContext callback) {
   LiSetRemoteTextContextCallbackCtx(LiGetEffectiveConnectionContext(), callback);
 }
 
+void LiSetDs5OutputExtensionCallbackCtx(PML_CONNECTION_CONTEXT ctx, ConnListenerDs5OutputExtension callback) {
+  if (ctx != NULL) {
+    ctx->Ds5OutputExtensionCallback = callback;
+  }
+}
+
+void LiSetDs5OutputExtensionCallback(ConnListenerDs5OutputExtension callback) {
+  LiSetDs5OutputExtensionCallbackCtx(LiGetEffectiveConnectionContext(), callback);
+}
+
 void LiInitializeServerInformation(PSERVER_INFORMATION serverInfo) {
   memset(serverInfo, 0, sizeof(*serverInfo));
 }

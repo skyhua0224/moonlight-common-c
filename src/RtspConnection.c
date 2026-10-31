@@ -1,5 +1,6 @@
 #include "Limelight-internal.h"
 #include "DynamicHdr.h"
+#include "Ds5ControlExtension.h"
 #include "Rtsp.h"
 
 #define RTSP_CONNECT_TIMEOUT_SEC 10
@@ -1593,6 +1594,22 @@ int performRtspHandshakeCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serv
       EncryptionFeaturesRequested = 0;
     }
     EncryptionFeaturesEnabled = 0;
+
+    // DualSense control extensions declared by the host. Absent or malformed
+    // values leave the mask empty, so the client never sends 0x5516 to a host
+    // that did not declare it.
+    ctx->controlContext.ds5ExtensionMask = 0;
+    if (IS_SUNSHINE_CTX(ctx)) {
+      const char* ds5Attribute = strstr(response.payload, "a=" DS5EXT_SDP_HOST_ATTRIBUTE ":");
+      if (ds5Attribute != NULL) {
+        const char* ds5Value = ds5Attribute + strlen("a=" DS5EXT_SDP_HOST_ATTRIBUTE ":");
+        size_t ds5Length = 0;
+        while (ds5Value[ds5Length] != '\0' && ds5Value[ds5Length] != '\r' && ds5Value[ds5Length] != '\n') {
+          ds5Length++;
+        }
+        ctx->controlContext.ds5ExtensionMask = ds5ExtParseSdpValue(ds5Value, ds5Length);
+      }
+    }
 
     // Parse the Opus surround parameters out of the RTSP DESCRIBE response.
     ret = parseOpusConfigurations(ctx, rtsp, &response);

@@ -1,0 +1,151 @@
+#include "Limelight-internal.h"
+#include "Ds5ControlExtension.h"
+
+// The internal header maps these names onto the global connection context.
+#undef RemoteAddr
+#undef AddrLen
+#undef StreamConfig
+#undef NegotiatedVideoFormat
+#undef ListenerCallbacks
+#undef RtspPortNumber
+#undef VideoPortNumber
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Negotiation behaviour of the DualSense control extensions against the real
+// SDP generator and the real send gate: an old peer must see no change.
+
+static int failures;
+
+#define CHECK(condition) \
+    do { \
+        if (!(condition)) { \
+            fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #condition); \
+            failures++; \
+        } \
+    } while (0)
+
+static void ignoreOutput(const LI_DS5_OUTPUT_EXTENSION* output) {
+    (void)output;
+}
+
+static PML_CONNECTION_CONTEXT newContext(bool sunshine) {
+    // The generator also reads the global context, so the test fills that one.
+    PML_CONNECTION_CONTEXT ctx = &gConnectionContext;
+    struct sockaddr_in* addr;
+
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->AppVersionQuad[0] = 7;
+    ctx->AppVersionQuad[1] = 1;
+    ctx->AppVersionQuad[2] = 431;
+    ctx->AppVersionQuad[3] = sunshine ? -1 : 0;
+    ctx->StreamConfig.width = 1920;
+    ctx->StreamConfig.height = 1080;
+    ctx->StreamConfig.fps = 60;
+    ctx->StreamConfig.bitrate = 20000;
+    ctx->StreamConfig.packetSize = 1392;
+    ctx->StreamConfig.streamingRemotely = STREAM_CFG_LOCAL;
+    ctx->StreamConfig.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
+    ctx->StreamConfig.supportedVideoFormats = VIDEO_FORMAT_H264;
+    ctx->NegotiatedVideoFormat = VIDEO_FORMAT_H264;
+    ctx->RtspPortNumber = 48010;
+    ctx->VideoPortNumber = 47998;
+    addr = (struct sockaddr_in*)&ctx->RemoteAddr;
+    addr->sin_family = AF_INET;
+    addr->sin_addr.s_addr = htonl(0x7f000001u);
+    ctx->AddrLen = sizeof(*addr);
+    return ctx;
+}
+
+static char* sdpFor(PML_CONNECTION_CONTEXT ctx) {
+    int length = 0;
+    char* payload = getSdpPayloadForStreamConfigCtx(ctx, 14, &length);
+    if (payload == NULL) {
+        return NULL;
+    }
+    char* copy = malloc((size_t)length + 1);
+    memcpy(copy, payload, (size_t)length);
+    copy[length] = '\0';
+    free(payload);
+    return copy;
+}
+
+static void testClientOffer(void) {
+    PML_CONNECTION_CONTEXT ctx = newContext(true);
+    char* withoutCallback = sdpFor(ctx);
+    char* withCallback;
+
+    CHECK(withoutCallback != NULL);
+    // No callback registered: the offer is absent and the SDP carries no trace of the extension.
+    CHECK(withoutCallback != NULL && strstr(withoutCallback, "ds5Extensions") == NULL);
+
+    LiSetDs5OutputExtensionCallbackCtx(ctx, ignoreOutput);
+    withCallback = sdpFor(ctx);
+    CHECK(withCallback != NULL);
+    CHECK(withCallback != NULL &&
+          strstr(withCallback, "a=x-ml-general.ds5Extensions:output=1,input-status=1") != NULL);
+
+    // The only difference between the two payloads is the one attribute line.
+    if (withoutCallback != NULL && withCallback != NULL) {
+        const char* line = strstr(withCallback, "a=x-ml-general.ds5Extensions:");
+        size_t before = (size_t)(line - withCallback);
+        size_t lineLength = strcspn(line, "\n") + 1;
+        CHECK(strlen(withCallback) == strlen(withoutCallback) + lineLength);
+        CHECK(strncmp(withCallback, withoutCallback, before) == 0);
+        CHECK(strcmp(withCallback + before + lineLength, withoutCallback + before) == 0);
+    }
+    free(withoutCallback);
+    free(withCallback);
+
+    // A non-Sunshine host never gets the attribute, even with the callback set.
+    ctx = newContext(false);
+    LiSetDs5OutputExtensionCallbackCtx(ctx, ignoreOutput);
+    withCallback = sdpFor(ctx);
+    CHECK(withCallback == NULL || strstr(withCallback, "ds5Extensions") == NULL);
+    free(withCallback);
+}
+
+static void testSendGate(void) {
+    PML_CONNECTION_CONTEXT ctx = newContext(true);
+    static short packetTypes[32];
+    int index;
+
+    for (index = 0; index < 32; index++) {
+        packetTypes[index] = -1;
+    }
+    packetTypes[26] = 0x5516;
+    ctx->controlContext.connectionContext = ctx;
+    ctx->controlContext.packetTypes = packetTypes;
+
+    // Old host: it declared nothing. Nothing is sent, and the call does not touch the peer.
+    ctx->controlContext.ds5ExtensionMask = 0;
+    CHECK(LiSendDs5InputStatusCtx(&ctx->controlContext, 0, DS5EXT_IN_HEADSET, 1, 0, 0) == LI_ERR_UNSUPPORTED);
+    CHECK(LiGetHostDs5ExtensionsCtx(ctx) == 0);
+
+    // A host that declared only "output" does not get 0x5516.
+    ctx->controlContext.ds5ExtensionMask = DS5EXT_MASK_OUTPUT_V1;
+    CHECK(LiSendDs5InputStatusCtx(&ctx->controlContext, 0, DS5EXT_IN_HEADSET, 1, 0, 0) == LI_ERR_UNSUPPORTED);
+
+    // Declared, but the control stream is not connected: still nothing.
+    ctx->controlContext.ds5ExtensionMask = DS5EXT_MASK_INPUT_STATUS_V1;
+    CHECK(LiSendDs5InputStatusCtx(&ctx->controlContext, 0, DS5EXT_IN_HEADSET, 1, 0, 0) == LI_ERR_UNSUPPORTED);
+    CHECK(LiGetHostDs5ExtensionsCtx(ctx) == DS5EXT_MASK_INPUT_STATUS_V1);
+
+    // A non-Sunshine host is never a target.
+    ctx->AppVersionQuad[3] = 0;
+    CHECK(LiSendDs5InputStatusCtx(&ctx->controlContext, 0, DS5EXT_IN_HEADSET, 1, 0, 0) == LI_ERR_UNSUPPORTED);
+    CHECK(LiSendDs5InputStatusCtx(NULL, 0, DS5EXT_IN_HEADSET, 1, 0, 0) == LI_ERR_UNSUPPORTED);
+}
+
+int main(void) {
+    testClientOffer();
+    testSendGate();
+    if (failures != 0) {
+        fprintf(stderr, "%d failure(s)\n", failures);
+        return 1;
+    }
+    printf("ds5 extension negotiation tests passed\n");
+    return 0;
+}

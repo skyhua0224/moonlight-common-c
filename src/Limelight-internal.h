@@ -317,6 +317,8 @@ typedef struct _ML_CONTROL_STREAM_CONTEXT {
 
         // Sunshine RS FEC preference + aggregate loss feedback (opt-in)
         bool videoFecControlSupported;
+        // DS5EXT_MASK_* directions the host declared in x-ss-general.ds5Extensions
+        uint32_t ds5ExtensionMask;
         PLT_MUTEX fecSummaryMutex;
         uint32_t fecDataPackets, fecMissingPackets, fecSequence, fecLastFrame;
         uint8_t fecLastBlock;
@@ -551,6 +553,7 @@ typedef struct _ML_CONNECTION_CONTEXT {
     // Audio bitrate (bps) selected for AC3/E-AC3 sessions. 0 when codec == OPUS.
     int NegotiatedAudioBitrate;
     ConnListenerRemoteTextContext RemoteTextContextCallback;
+    ConnListenerDs5OutputExtension Ds5OutputExtensionCallback;
     // Live streaming sockets for LiGetStreamSockets(), indexed by STREAM_SOCKET_SLOT_*
     volatile SOCKET streamSocketRegistry[3];
     volatile bool ConnectionInterrupted;
@@ -717,6 +720,10 @@ PML_INPUT_STREAM_CONTEXT LiGetInputContextFromConnectionCtx(PML_CONNECTION_CONTE
 PML_CONNECTION_CONTEXT LiGetGlobalConnectionContextPtr(void);
 uint32_t LiGetHostFeatureFlagsCtx(PML_CONNECTION_CONTEXT ctx);
 void LiSetRemoteTextContextCallbackCtx(PML_CONNECTION_CONTEXT ctx, ConnListenerRemoteTextContext callback);
+void LiSetDs5OutputExtensionCallbackCtx(PML_CONNECTION_CONTEXT ctx, ConnListenerDs5OutputExtension callback);
+int LiSendDs5InputStatusCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint16_t controllerNumber, uint32_t validMask,
+                            uint8_t headsetPresent, uint8_t microphonePresent, uint8_t microphoneMuted);
+uint32_t LiGetHostDs5ExtensionsCtx(PML_CONNECTION_CONTEXT ctx);
 
 
 int LiSendMouseMoveEventCtx(PML_INPUT_STREAM_CONTEXT ctx, short deltaX, short deltaY);

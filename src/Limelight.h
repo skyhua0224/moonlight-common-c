@@ -814,6 +814,41 @@ void LiInitializeConnectionCallbacks(
 // LiStartConnection(). This function is not thread-safe.
 void LiSetRemoteTextContextCallback(ConnListenerRemoteTextContext callback);
 
+// DualSense output extension (control message 0x5515, host to client): player
+// and mute LEDs, speaker / headset / microphone volume, microphone mute, audio
+// routing and lightbar brightness. Each field is meaningful only when its bit
+// is set in validMask; the values are the DualSense output report bytes
+// (player LEDs: byte 44, mute LED: byte 9, speaker: 6, headset: 5, microphone:
+// 7, microphone mute: byte 10 bit 4, routing: byte 8, brightness: byte 43).
+#define LI_DS5_OUT_PLAYER_LEDS         0x00000001
+#define LI_DS5_OUT_MUTE_LED            0x00000002
+#define LI_DS5_OUT_SPEAKER_VOLUME      0x00000004
+#define LI_DS5_OUT_HEADPHONE_VOLUME    0x00000008
+#define LI_DS5_OUT_MIC_VOLUME          0x00000010
+#define LI_DS5_OUT_MIC_MUTE            0x00000020
+#define LI_DS5_OUT_AUDIO_ROUTING       0x00000040
+#define LI_DS5_OUT_LIGHTBAR_BRIGHTNESS 0x00000080
+typedef struct _LI_DS5_OUTPUT_EXTENSION {
+    uint16_t controllerNumber;
+    uint32_t validMask;
+    uint8_t playerLedMask;
+    uint8_t muteLed;
+    uint8_t speakerVolume;
+    uint8_t headphoneVolume;
+    uint8_t micVolume;
+    uint8_t micMute;
+    uint8_t audioRouting;
+    uint8_t lightbarBrightness;
+} LI_DS5_OUTPUT_EXTENSION, *PLI_DS5_OUTPUT_EXTENSION;
+typedef void(*ConnListenerDs5OutputExtension)(const LI_DS5_OUTPUT_EXTENSION* output);
+
+// Registers the DualSense output extension callback without extending the
+// ABI-sensitive CONNECTION_LISTENER_CALLBACKS structure. A non-NULL callback
+// makes the client offer the extension to the host in the launch SDP
+// (x-ml-general.ds5Extensions). Call before LiStartConnection(). This function
+// is not thread-safe.
+void LiSetDs5OutputExtensionCallback(ConnListenerDs5OutputExtension callback);
+
 // ServerCodecModeSupport values
 #define SCM_H264 0x00000001
 #define SCM_HEVC 0x00000100
@@ -1213,6 +1248,23 @@ int LiSendMultiControllerEvent(short controllerNumber, short activeGamepadMask,
 #define LI_CCAP_DS5_HAPTICS_PCM 0x200 // Can render authored DualSense stereo PCM feedback
 int LiSendControllerArrivalEvent(uint8_t controllerNumber, uint16_t activeGamepadMask, uint8_t type,
                                  uint32_t supportedButtonFlags, uint16_t capabilities);
+
+// DualSense input status (control message 0x5516, client to host): headset and
+// microphone presence and the microphone mute state. Only the fields set in
+// validMask are carried. Returns 0 on success, LI_ERR_UNSUPPORTED when the host
+// did not declare "input-status=1" in x-ss-general.ds5Extensions (an old host
+// never sees the message), or another negative error.
+#define LI_DS5_IN_HEADSET     0x00000001
+#define LI_DS5_IN_MICROPHONE  0x00000002
+#define LI_DS5_IN_MIC_MUTED   0x00000004
+int LiSendDs5InputStatus(uint16_t controllerNumber, uint32_t validMask, uint8_t headsetPresent,
+                         uint8_t microphonePresent, uint8_t microphoneMuted);
+
+// Returns the DualSense extension directions the host declared (DS5EXT bits:
+// 0x01 output, 0x02 input-status), or 0 for a host that declared none.
+#define LI_DS5_EXT_OUTPUT        0x01
+#define LI_DS5_EXT_INPUT_STATUS  0x02
+uint32_t LiGetHostDs5Extensions(void);
 
 // This function is similar to LiSendTouchEvent(), but the touch events are
 // associated with a touchpad device present on a game controller instead of a

@@ -497,6 +497,7 @@ int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverI
     ctx->NegotiatedDynamicHdrFormat = 0;
     ctx->NegotiatedDynamicHdrFallback = 0;
     ctx->controlContext.videoFecControlSupported = false;
+    ctx->controlContext.ds5ExtensionMask = 0;
     memcpy(&StreamConfig, streamConfig, sizeof(StreamConfig));
     RemoteAddrString = strdup(serverInfo->address);
     if (StreamConfig.videoFecPercentage < -2 || StreamConfig.videoFecPercentage > 100) {

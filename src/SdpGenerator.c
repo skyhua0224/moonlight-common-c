@@ -1,5 +1,6 @@
 #include "Limelight-internal.h"
 #include "DynamicHdr.h"
+#include "Ds5ControlExtension.h"
 #include <inttypes.h>
 
 // Macros to redirect global access to context
@@ -49,6 +50,9 @@
 #ifdef RemoteTextContextCallback
 #undef RemoteTextContextCallback
 #endif
+#ifdef Ds5OutputExtensionCallback
+#undef Ds5OutputExtensionCallback
+#endif
 #ifdef NegotiatedAudioCodec
 #undef NegotiatedAudioCodec
 #endif
@@ -74,6 +78,7 @@
 #define AudioPacketDuration (ctx->AudioPacketDuration)
 #define ListenerCallbacks (ctx->ListenerCallbacks)
 #define RemoteTextContextCallback (ctx->RemoteTextContextCallback)
+#define Ds5OutputExtensionCallback (ctx->Ds5OutputExtensionCallback)
 #define NegotiatedAudioCodec (ctx->NegotiatedAudioCodec)
 #define NegotiatedAudioBitrate (ctx->NegotiatedAudioBitrate)
 #define VideoFecControlSupported (ctx->controlContext.videoFecControlSupported)
@@ -365,6 +370,13 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         // never advertised: PyroWave is not enabled in this client.
         snprintf(payloadStr, sizeof(payloadStr), "%" PRIu32, moonlightFeatureFlags);
         err |= addAttributeString(&optionHead, "x-ml-general.featureFlags", payloadStr);
+
+        // DualSense control extensions (0x5515/0x5516) use a versioned string
+        // namespace instead of a capability bit. A host that does not know the
+        // attribute ignores it and never sees either message.
+        if (Ds5OutputExtensionCallback != NULL) {
+            err |= addAttributeString(&optionHead, DS5EXT_SDP_CLIENT_ATTRIBUTE, DS5EXT_SDP_OFFER);
+        }
 
         // New-style control stream encryption is low overhead, so we enable it any time it is supported
         if (EncryptionFeaturesSupported & SS_ENC_CONTROL_V2) {

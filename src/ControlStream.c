@@ -3,6 +3,7 @@
 #include "Ds5HapticsStream.h"
 #include "Ds5HapticsIrStream.h"
 #include "RemoteTextContextStream.h"
+#include "Ds5ControlExtension.h"
 
 #include <math.h>
 
@@ -161,6 +162,31 @@ static bool sendMessageAndForget(PML_CONTROL_STREAM_CONTEXT ctx, short ptype,
                                  uint8_t channelId, uint32_t flags,
                                  bool moreData);
 
+// 0x5515: the whole body is validated before any field reaches the client; a
+// malformed body is dropped without a partial application.
+static void processDs5OutputExtension(PML_CONTROL_STREAM_CONTEXT ctx,
+                                      const uint8_t* payload, int payloadLength) {
+    DS5EXT_OUTPUT decoded;
+    LI_DS5_OUTPUT_EXTENSION output;
+    ConnListenerDs5OutputExtension callback = ctx->connectionContext->Ds5OutputExtensionCallback;
+
+    if (callback == NULL || payloadLength <= 0 ||
+            !ds5ExtDecodeOutput(payload, (size_t)payloadLength, &decoded)) {
+        return;
+    }
+    output.controllerNumber = decoded.controllerNumber;
+    output.validMask = decoded.validMask;
+    output.playerLedMask = decoded.playerLedMask;
+    output.muteLed = decoded.muteLed;
+    output.speakerVolume = decoded.speakerVolume;
+    output.headphoneVolume = decoded.headphoneVolume;
+    output.micVolume = decoded.micVolume;
+    output.micMute = decoded.micMute;
+    output.audioRouting = decoded.audioRouting;
+    output.lightbarBrightness = decoded.lightbarBrightness;
+    callback(&output);
+}
+
 #define CONN_IMMEDIATE_POOR_LOSS_RATE 30
 #define CONN_CONSECUTIVE_POOR_LOSS_RATE 15
 #define CONN_OKAY_LOSS_RATE 5
@@ -197,6 +223,8 @@ static bool sendMessageAndForget(PML_CONTROL_STREAM_CONTEXT ctx, short ptype,
 #define IDX_DS5_HAPTICS_PCM 22
 #define IDX_DS5_HAPTICS_IR_V2 23
 #define IDX_REMOTE_TEXT_CONTEXT 24
+#define IDX_DS5_OUTPUT_EXTENSION 25
+#define IDX_DS5_INPUT_STATUS 26
 
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
@@ -228,6 +256,8 @@ static const short packetTypesGen3[] = {
     -1,     // DualSense haptics PCM (unused)
     -1,     // DualSense haptics IR v2 (unused)
     -1,     // Remote text context (unused)
+    -1,     // DualSense output extension (unused)
+    -1,     // DualSense input status (unused)
 };
 static const short packetTypesGen4[] = {
     0x0606, // Start A (Gen4 uses IDR request here)
@@ -255,6 +285,8 @@ static const short packetTypesGen4[] = {
     -1,     // DualSense haptics PCM (unused)
     -1,     // DualSense haptics IR v2 (unused)
     -1,     // Remote text context (unused)
+    -1,     // DualSense output extension (unused)
+    -1,     // DualSense input status (unused)
 };
 static const short packetTypesGen5[] = {
     0x0305, // Start A
@@ -282,6 +314,8 @@ static const short packetTypesGen5[] = {
     -1,     // DualSense haptics PCM (unused)
     -1,     // DualSense haptics IR v2 (unused)
     -1,     // Remote text context (unused)
+    -1,     // DualSense output extension (unused)
+    -1,     // DualSense input status (unused)
 };
 static const short packetTypesGen7[] = {
     0x0305, // Start A
@@ -309,6 +343,8 @@ static const short packetTypesGen7[] = {
     -1,     // DualSense haptics PCM (unused)
     -1,     // DualSense haptics IR v2 (unused)
     -1,     // Remote text context (unused)
+    -1,     // DualSense output extension (unused)
+    -1,     // DualSense input status (unused)
 };
 static const short packetTypesGen7Enc[] = {
     0x0305, // Start A (index 0)
@@ -336,6 +372,8 @@ static const short packetTypesGen7Enc[] = {
     0x550A, // Authored DualSense haptics PCM (Sunshine protocol extension) (index 22)
     0x550B, // Device-independent DualSense haptics IR v2 (Sunshine protocol extension) (index 23)
     0x550C, // Remote text context (Sunshine protocol extension) (index 24)
+    0x5515, // DualSense output extension, host to client (index 25)
+    0x5516, // DualSense input status, client to host (index 26)
 };
 
 static const char requestIdrFrameGen3[] = { 0, 0 };
@@ -375,6 +413,8 @@ static const short payloadLengthsGen3[] = {
     -1,                          // DualSense haptics PCM (variable-length)
     -1,                          // DualSense haptics IR v2 (fixed payload, validated by parser)
     -1,                          // Remote text context (fixed payload, validated by parser)
+    -1,                          // DualSense output extension (fixed payload, validated by parser)
+    -1,                          // DualSense input status (fixed payload, validated by parser)
 };
 static const short payloadLengthsGen4[] = {
     sizeof(requestIdrFrameGen4), // Start A (Gen4 uses IDR request here)
@@ -402,6 +442,8 @@ static const short payloadLengthsGen4[] = {
     -1,                          // DualSense haptics PCM (variable-length)
     -1,                          // DualSense haptics IR v2 (fixed payload, validated by parser)
     -1,                          // Remote text context (fixed payload, validated by parser)
+    -1,                          // DualSense output extension (fixed payload, validated by parser)
+    -1,                          // DualSense input status (fixed payload, validated by parser)
 };
 static const short payloadLengthsGen5[] = {
     sizeof(startAGen5), // Start A
@@ -429,6 +471,8 @@ static const short payloadLengthsGen5[] = {
     -1,                 // DualSense haptics PCM (variable-length)
     -1,                 // DualSense haptics IR v2 (fixed payload, validated by parser)
     -1,                 // Remote text context (fixed payload, validated by parser)
+    -1,                 // DualSense output extension (fixed payload, validated by parser)
+    -1,                 // DualSense input status (fixed payload, validated by parser)
 };
 static const short payloadLengthsGen7[] = {
     sizeof(startAGen5), // Start A
@@ -456,6 +500,8 @@ static const short payloadLengthsGen7[] = {
     -1,                 // DualSense haptics PCM (variable-length)
     -1,                 // DualSense haptics IR v2 (fixed payload, validated by parser)
     -1,                 // Remote text context (fixed payload, validated by parser)
+    -1,                 // DualSense output extension (fixed payload, validated by parser)
+    -1,                 // DualSense input status (fixed payload, validated by parser)
 };
 static const short payloadLengthsGen7Enc[] = {
     sizeof(startAGen5),             // Start A
@@ -483,6 +529,8 @@ static const short payloadLengthsGen7Enc[] = {
     -1,                             // DualSense haptics PCM (variable-length)
     -1,                             // DualSense haptics IR v2 (fixed payload, validated by parser)
     -1,                             // Remote text context (fixed payload, validated by parser)
+    -1,                             // DualSense output extension (fixed payload, validated by parser)
+    -1,                             // DualSense input status (fixed payload, validated by parser)
 };
 
 static const char* preconstructedPayloadsGen3[] = {
@@ -511,6 +559,8 @@ static const char* preconstructedPayloadsGen3[] = {
     NULL,                // IDX_DS5_HAPTICS_PCM
     NULL,                // IDX_DS5_HAPTICS_IR_V2
     NULL,                // IDX_REMOTE_TEXT_CONTEXT
+    NULL,                // IDX_DS5_OUTPUT_EXTENSION
+    NULL,                // IDX_DS5_INPUT_STATUS
 };
 static const char* preconstructedPayloadsGen4[] = {
     requestIdrFrameGen4, // IDX_START_A
@@ -538,6 +588,8 @@ static const char* preconstructedPayloadsGen4[] = {
     NULL,                // IDX_DS5_HAPTICS_PCM
     NULL,                // IDX_DS5_HAPTICS_IR_V2
     NULL,                // IDX_REMOTE_TEXT_CONTEXT
+    NULL,                // IDX_DS5_OUTPUT_EXTENSION
+    NULL,                // IDX_DS5_INPUT_STATUS
 };
 static const char* preconstructedPayloadsGen5[] = {
     startAGen5, // IDX_START_A
@@ -549,6 +601,8 @@ static const char* preconstructedPayloadsGen5[] = {
     NULL, // IDX_DS5_HAPTICS_PCM
     NULL, // IDX_DS5_HAPTICS_IR_V2
     NULL, // IDX_REMOTE_TEXT_CONTEXT
+    NULL, // IDX_DS5_OUTPUT_EXTENSION
+    NULL, // IDX_DS5_INPUT_STATUS
 };
 static const char* preconstructedPayloadsGen7[] = {
     startAGen5, // IDX_START_A
@@ -560,6 +614,8 @@ static const char* preconstructedPayloadsGen7[] = {
     NULL, // IDX_DS5_HAPTICS_PCM
     NULL, // IDX_DS5_HAPTICS_IR_V2
     NULL, // IDX_REMOTE_TEXT_CONTEXT
+    NULL, // IDX_DS5_OUTPUT_EXTENSION
+    NULL, // IDX_DS5_INPUT_STATUS
 };
 static const char* preconstructedPayloadsGen7Enc[] = {
     startAGen5,             // IDX_START_A
@@ -587,6 +643,8 @@ static const char* preconstructedPayloadsGen7Enc[] = {
     NULL,                   // IDX_DS5_HAPTICS_PCM
     NULL,                   // IDX_DS5_HAPTICS_IR_V2
     NULL,                   // IDX_REMOTE_TEXT_CONTEXT
+    NULL,                   // IDX_DS5_OUTPUT_EXTENSION
+    NULL,                   // IDX_DS5_INPUT_STATUS
 };
 
 
@@ -2268,6 +2326,10 @@ static void controlReceiveThreadFunc(void* context) {
                                                     (void *)ListenerCallbacks.ds5HapticsIrV2);
                 }
             }
+            else if (ctlHdr->type == ctx->packetTypes[IDX_DS5_OUTPUT_EXTENSION]) {
+                processDs5OutputExtension(ctx, (const uint8_t *)(ctlHdr + 1),
+                                          packetLength - (int)sizeof(*ctlHdr));
+            }
             else if (ctlHdr->type == ctx->packetTypes[IDX_REMOTE_TEXT_CONTEXT]) {
                 if (packetLength > (int)sizeof(*ctlHdr)) {
                     processRemoteTextContext(ctx, (const uint8_t *)(ctlHdr + 1),
@@ -2888,6 +2950,48 @@ int LiSendClipboardDataCtx(PML_CONTROL_STREAM_CONTEXT ctx,
 
 int LiSendClipboardData(const void* payload, int length) {
     return LiSendClipboardDataCtx(LiGetEffectiveControlContext(), payload, length);
+}
+
+// 0x5516, client to host. Sent only to a host that declared input-status=1.
+int LiSendDs5InputStatusCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint16_t controllerNumber, uint32_t validMask,
+                            uint8_t headsetPresent, uint8_t microphonePresent, uint8_t microphoneMuted) {
+    DS5EXT_INPUT_STATUS status;
+    uint8_t body[DS5EXT_INPUT_STATUS_BODY_BYTES];
+
+    if (ctx == NULL || ctx->connectionContext == NULL || ctx->packetTypes == NULL ||
+            !IS_SUNSHINE_CTX(ctx->connectionContext) ||
+            (ctx->ds5ExtensionMask & DS5EXT_MASK_INPUT_STATUS_V1) == 0 ||
+            ctx->packetTypes[IDX_DS5_INPUT_STATUS] == -1 ||
+            ctx->peer == NULL || ctx->peer->state != ENET_PEER_STATE_CONNECTED) {
+        return LI_ERR_UNSUPPORTED;
+    }
+    status.controllerNumber = controllerNumber;
+    status.validMask = validMask;
+    status.headsetPresent = headsetPresent;
+    status.microphonePresent = microphonePresent;
+    status.microphoneMuted = microphoneMuted;
+    if (ds5ExtEncodeInputStatus(&status, body, sizeof(body)) == 0) {
+        return -1;
+    }
+    if (!sendMessageAndForget(ctx, ctx->packetTypes[IDX_DS5_INPUT_STATUS], (int)sizeof(body), body,
+                              CTRL_CHANNEL_GENERIC, ENET_PACKET_FLAG_RELIABLE, false)) {
+        return LastSocketFail();
+    }
+    return 0;
+}
+
+int LiSendDs5InputStatus(uint16_t controllerNumber, uint32_t validMask, uint8_t headsetPresent,
+                         uint8_t microphonePresent, uint8_t microphoneMuted) {
+    return LiSendDs5InputStatusCtx(LiGetEffectiveControlContext(), controllerNumber, validMask,
+                                   headsetPresent, microphonePresent, microphoneMuted);
+}
+
+uint32_t LiGetHostDs5ExtensionsCtx(PML_CONNECTION_CONTEXT ctx) {
+    return ctx != NULL ? ctx->controlContext.ds5ExtensionMask : 0;
+}
+
+uint32_t LiGetHostDs5Extensions(void) {
+    return LiGetHostDs5ExtensionsCtx(LiGetEffectiveConnectionContext());
 }
 
 // Shared gate for the Sunshine dynamic parameter control message (0x5506).
