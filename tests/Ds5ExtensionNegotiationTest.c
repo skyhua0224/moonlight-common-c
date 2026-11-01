@@ -63,6 +63,8 @@ static PML_CONNECTION_CONTEXT newContext(bool sunshine) {
     return ctx;
 }
 
+static void ignoreIr(const LI_DS5_HAPTICS_IR_FRAME_V2* frame) { (void)frame; }
+
 static char* sdpFor(PML_CONNECTION_CONTEXT ctx) {
     int length = 0;
     char* payload = getSdpPayloadForStreamConfigCtx(ctx, 14, &length);
@@ -94,11 +96,38 @@ static void testClientOffer(void) {
     // A client that can play the pad's speaker (a haptics PCM callback) adds the pad-audio token.
     ctx->ListenerCallbacks.ds5HapticsPcm = ignorePcm;
     {
+        // The PCM callback alone offers no speaker token: the offer mode says what the client does with the pair.
+        char* plain = sdpFor(ctx);
+        const char* plainLine = plain != NULL ? strstr(plain, "ds5Extensions:output=1,input-status=1") : NULL;
+        CHECK(plainLine != NULL && strncmp(plainLine, "ds5Extensions:output=1,input-status=1", 37) == 0 && plainLine[37] != ',');
+        free(plain);
+    }
+    LiSetDs5PadAudioOffer(1);
+    {
         char* withPadAudio = sdpFor(ctx);
         CHECK(withPadAudio != NULL &&
               strstr(withPadAudio, "a=x-ml-general.ds5Extensions:output=1,input-status=1,pad-audio=1") != NULL);
         free(withPadAudio);
     }
+    // "pad-speaker": IR haptics plus the speaker pair. The PCM feature flag (0x04) must not be offered, or a host that does not know the
+    // token sees PCM and IR together and takes the raw PCM route, which sends no IR.
+    ctx->ListenerCallbacks.ds5HapticsIrV2 = ignoreIr;
+    LiSetDs5PadAudioOffer(2);
+    {
+        char* withPadSpeaker = sdpFor(ctx);
+        CHECK(withPadSpeaker != NULL &&
+              strstr(withPadSpeaker, "a=x-ml-general.ds5Extensions:output=1,input-status=1,pad-speaker=1") != NULL);
+        const char* flags = withPadSpeaker != NULL ? strstr(withPadSpeaker, "x-ml-general.featureFlags:") : NULL;
+        CHECK(flags != NULL);
+        if (flags != NULL) {
+            const unsigned long value = strtoul(flags + strlen("x-ml-general.featureFlags:"), NULL, 10);
+            CHECK((value & ML_FF_DS5_HAPTICS_IR_V2) != 0);
+            CHECK((value & ML_FF_DS5_HAPTICS_PCM) == 0);
+        }
+        free(withPadSpeaker);
+    }
+    LiSetDs5PadAudioOffer(0);
+    ctx->ListenerCallbacks.ds5HapticsIrV2 = NULL;
     ctx->ListenerCallbacks.ds5HapticsPcm = NULL;
 
     // The only difference between the two payloads is the one attribute line.
