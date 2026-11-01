@@ -696,6 +696,9 @@ typedef struct _LI_CURSOR_UPDATE {
 } LI_CURSOR_UPDATE, *PLI_CURSOR_UPDATE;
 typedef void(*ConnListenerCursorUpdate)(const LI_CURSOR_UPDATE* update);
 
+// Offer the "pad-audio" extension (four channels) in the next connection; off by default.
+void LiSetDs5PadAudioOffer(int enabled);
+
 // Authored DualSense haptics captured from the host's virtual USB audio
 // endpoint. PCM is signed 16-bit little-endian, interleaved haptic-left then
 // haptic-right; with four channels (offered as "pad-audio") speaker-left and

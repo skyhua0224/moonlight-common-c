@@ -3,6 +3,14 @@
 #include "Ds5ControlExtension.h"
 #include <inttypes.h>
 
+// "pad-audio" (four-channel haptics PCM with the pad's speaker pair) is offered only when the application asks for it:
+// the wired path stays on the two haptic channels unless it is switched on.
+static volatile int Ds5PadAudioOffer = 0;
+
+void LiSetDs5PadAudioOffer(int enabled) {
+    Ds5PadAudioOffer = enabled != 0;
+}
+
 // Macros to redirect global access to context
 #define AppVersionQuad (ctx->AppVersionQuad)
 #ifdef StreamConfig
@@ -376,7 +384,7 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         // attribute ignores it and never sees either message.
         if (Ds5OutputExtensionCallback != NULL) {
             err |= addAttributeString(&optionHead, DS5EXT_SDP_CLIENT_ATTRIBUTE,
-                                      ListenerCallbacks.ds5HapticsPcm != NULL ? DS5EXT_SDP_OFFER_PAD_AUDIO : DS5EXT_SDP_OFFER);
+                                      (ListenerCallbacks.ds5HapticsPcm != NULL && Ds5PadAudioOffer) ? DS5EXT_SDP_OFFER_PAD_AUDIO : DS5EXT_SDP_OFFER);
         }
 
         // New-style control stream encryption is low overhead, so we enable it any time it is supported
