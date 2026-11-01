@@ -50,7 +50,7 @@ bool processDs5HapticsStreamPacket(const uint8_t* payload,
             (frame.flags & ~knownFlags) != 0 || reserved != 0 ||
             headerSize < DS5_HAPTICS_STREAM_WIRE_HEADER_SIZE ||
             headerSize > (uint16_t)payloadLength ||
-            frame.sampleRate != 48000 || frame.channelCount != 2 ||
+            frame.sampleRate != 48000 || (frame.channelCount != 2 && frame.channelCount != 4) ||
             frame.bitsPerSample != 16 ||
             frame.frameCount > DS5_HAPTICS_STREAM_MAX_FRAMES) {
         return false;

@@ -375,7 +375,8 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         // namespace instead of a capability bit. A host that does not know the
         // attribute ignores it and never sees either message.
         if (Ds5OutputExtensionCallback != NULL) {
-            err |= addAttributeString(&optionHead, DS5EXT_SDP_CLIENT_ATTRIBUTE, DS5EXT_SDP_OFFER);
+            err |= addAttributeString(&optionHead, DS5EXT_SDP_CLIENT_ATTRIBUTE,
+                                      ListenerCallbacks.ds5HapticsPcm != NULL ? DS5EXT_SDP_OFFER_PAD_AUDIO : DS5EXT_SDP_OFFER);
         }
 
         // New-style control stream encryption is low overhead, so we enable it any time it is supported

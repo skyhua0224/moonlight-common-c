@@ -20,6 +20,8 @@ static uint32_t parse(const char* text) {
 static void testSdpNamespace(void) {
     // The offer a client sends is understood by a peer that implements the namespace.
     CHECK(parse(DS5EXT_SDP_OFFER) == (DS5EXT_MASK_OUTPUT_V1 | DS5EXT_MASK_INPUT_STATUS_V1));
+    CHECK(parse(DS5EXT_SDP_OFFER_PAD_AUDIO) == (DS5EXT_MASK_OUTPUT_V1 | DS5EXT_MASK_INPUT_STATUS_V1 | DS5EXT_MASK_PAD_AUDIO_V1));
+    CHECK(parse("pad-audio=2") == 0);
     CHECK(parse("output=1") == DS5EXT_MASK_OUTPUT_V1);
     CHECK(parse("input-status=1") == DS5EXT_MASK_INPUT_STATUS_V1);
     CHECK(parse("output=1;input-status=1") == 3);

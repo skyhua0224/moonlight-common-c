@@ -698,7 +698,8 @@ typedef void(*ConnListenerCursorUpdate)(const LI_CURSOR_UPDATE* update);
 
 // Authored DualSense haptics captured from the host's virtual USB audio
 // endpoint. PCM is signed 16-bit little-endian, interleaved haptic-left then
-// haptic-right. The buffer is valid only for the duration of the callback.
+// haptic-right; with four channels (offered as "pad-audio") speaker-left and
+// speaker-right come first. The buffer is valid only for the duration of the callback.
 // Packets are intentionally unreliable; use sequenceNumber and the
 // DISCONTINUITY flag to reset a client-side jitter buffer after loss.
 #define LI_DS5_HAPTICS_PCM_FLAG_STREAM_START  0x01

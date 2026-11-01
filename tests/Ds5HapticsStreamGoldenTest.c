@@ -57,6 +57,35 @@ static void testValidFrame(void) {
     CHECK(memcmp(captured.frame.pcmData, packet + 28, 8) == 0);
 }
 
+static void testFourChannelFrame(void) {
+    static const uint8_t packet[] = {
+        0x01, 0x00, 0x1c, 0x00,
+        0x00, 0x00, 0x02, 0x00,
+        0x09, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x80, 0xbb, 0x00, 0x00,
+        0x04, 0x10, 0x00, 0x00,
+        0x11, 0x12, 0x13, 0x14, 0x01, 0x02, 0x03, 0x04,
+        0x21, 0x22, 0x23, 0x24, 0x05, 0x06, 0x07, 0x08,
+    };
+    CAPTURED_FRAME captured = {0};
+
+    CHECK(processDs5HapticsStreamPacket(packet, sizeof(packet), captureFrame, &captured));
+    CHECK(captured.count == 1);
+    CHECK(captured.frame.channelCount == 4);
+    CHECK(captured.frame.frameCount == 2);
+    CHECK(captured.frame.pcmDataLength == 16);
+    CHECK(memcmp(captured.frame.pcmData, packet + 28, 16) == 0);
+    // A frame count that does not match the declared channels is refused.
+    {
+        uint8_t shortPacket[sizeof(packet) - 8];
+        memcpy(shortPacket, packet, sizeof(shortPacket));
+        captured.count = 0;
+        CHECK(!processDs5HapticsStreamPacket(shortPacket, sizeof(shortPacket), captureFrame, &captured));
+        CHECK(captured.count == 0);
+    }
+}
+
 static void testStreamEndWithoutPcm(void) {
     static const uint8_t packet[] = {
         0x01, 0x02, 0x1c, 0x00,
@@ -90,7 +119,7 @@ static void testMalformedFrames(void) {
     packet[0] = 2;
     CHECK(!processDs5HapticsStreamPacket(packet, sizeof(packet), captureFrame, &captured));
     packet[0] = 1;
-    packet[24] = 4;
+    packet[24] = 6;
     CHECK(!processDs5HapticsStreamPacket(packet, sizeof(packet), captureFrame, &captured));
     packet[24] = 2;
     packet[26] = 1;
@@ -102,6 +131,7 @@ static void testMalformedFrames(void) {
 
 int main(void) {
     testValidFrame();
+    testFourChannelFrame();
     testStreamEndWithoutPcm();
     testMalformedFrames();
 

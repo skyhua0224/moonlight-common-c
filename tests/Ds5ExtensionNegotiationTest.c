@@ -27,6 +27,10 @@ static int failures;
         } \
     } while (0)
 
+static void ignorePcm(const LI_DS5_HAPTICS_PCM_FRAME* frame) {
+    (void)frame;
+}
+
 static void ignoreOutput(const LI_DS5_OUTPUT_EXTENSION* output) {
     (void)output;
 }
@@ -86,6 +90,16 @@ static void testClientOffer(void) {
     CHECK(withCallback != NULL);
     CHECK(withCallback != NULL &&
           strstr(withCallback, "a=x-ml-general.ds5Extensions:output=1,input-status=1") != NULL);
+
+    // A client that can play the pad's speaker (a haptics PCM callback) adds the pad-audio token.
+    ctx->ListenerCallbacks.ds5HapticsPcm = ignorePcm;
+    {
+        char* withPadAudio = sdpFor(ctx);
+        CHECK(withPadAudio != NULL &&
+              strstr(withPadAudio, "a=x-ml-general.ds5Extensions:output=1,input-status=1,pad-audio=1") != NULL);
+        free(withPadAudio);
+    }
+    ctx->ListenerCallbacks.ds5HapticsPcm = NULL;
 
     // The only difference between the two payloads is the one attribute line.
     if (withoutCallback != NULL && withCallback != NULL) {
