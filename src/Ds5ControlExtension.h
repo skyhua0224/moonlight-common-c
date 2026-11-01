@@ -38,10 +38,14 @@
 #define DS5EXT_SDP_OFFER "output=1,input-status=1"
 // Offered when the client can play the pad's speaker channels: the haptics PCM packet may then carry four channels.
 #define DS5EXT_SDP_OFFER_PAD_AUDIO "output=1,input-status=1,pad-audio=1"
+// Offered when the client takes the haptics as IR v2 frames and plays only the pad's speaker pair itself: the host then sends,
+// next to the IR packets, a haptics PCM packet that carries the speaker pair (four channels, channels 3 and 4 zero).
+#define DS5EXT_SDP_OFFER_PAD_SPEAKER "output=1,input-status=1,pad-speaker=1"
 
 #define DS5EXT_MASK_OUTPUT_V1 0x00000001u
 #define DS5EXT_MASK_INPUT_STATUS_V1 0x00000002u
 #define DS5EXT_MASK_PAD_AUDIO_V1 0x00000004u
+#define DS5EXT_MASK_PAD_SPEAKER_V1 0x00000008u
 
 #define DS5EXT_OUT_PLAYER_LEDS 0x00000001u
 #define DS5EXT_OUT_MUTE_LED 0x00000002u
@@ -143,6 +147,9 @@ static inline uint32_t ds5ExtParseSdpValue(const char* value, size_t length) {
             }
             else if (nameLength == 9 && memcmp(token, "pad-audio", 9) == 0) {
                 mask |= DS5EXT_MASK_PAD_AUDIO_V1;
+            }
+            else if (nameLength == 11 && memcmp(token, "pad-speaker", 11) == 0) {
+                mask |= DS5EXT_MASK_PAD_SPEAKER_V1;
             }
         }
     }

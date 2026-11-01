@@ -451,7 +451,7 @@ int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverI
         goto Cleanup;
     }
 
-    if (clCallbacks != NULL && clCallbacks->ds5HapticsPcm != NULL && clCallbacks->ds5HapticsIrV2 != NULL) {
+    if (clCallbacks != NULL && clCallbacks->ds5HapticsPcm != NULL && clCallbacks->ds5HapticsIrV2 != NULL && Ds5PadAudioOfferMode != 2) {
         Limelog("Physical and simulated DualSense haptics modes are mutually exclusive\n");
         LC_ASSERT(false);
         err = -1;

@@ -696,8 +696,11 @@ typedef struct _LI_CURSOR_UPDATE {
 } LI_CURSOR_UPDATE, *PLI_CURSOR_UPDATE;
 typedef void(*ConnListenerCursorUpdate)(const LI_CURSOR_UPDATE* update);
 
-// Offer the "pad-audio" extension (four channels) in the next connection; off by default.
-void LiSetDs5PadAudioOffer(int enabled);
+// What the next connection offers for the pad's speaker. 0: nothing (default). 1: "pad-audio": the haptics PCM packet carries four channels, the
+// haptics on 3 and 4 (needs the PCM callback, excludes IR). 2: "pad-speaker": IR v2 haptics (the IR callback) plus a haptics PCM packet that
+// carries only the speaker pair, channels 3 and 4 zero (needs both callbacks; the PCM feature flag is not offered, so a host without the
+// token keeps sending IR).
+void LiSetDs5PadAudioOffer(int mode);
 
 // Authored DualSense haptics captured from the host's virtual USB audio
 // endpoint. PCM is signed 16-bit little-endian, interleaved haptic-left then

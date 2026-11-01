@@ -22,6 +22,10 @@ static void testSdpNamespace(void) {
     CHECK(parse(DS5EXT_SDP_OFFER) == (DS5EXT_MASK_OUTPUT_V1 | DS5EXT_MASK_INPUT_STATUS_V1));
     CHECK(parse(DS5EXT_SDP_OFFER_PAD_AUDIO) == (DS5EXT_MASK_OUTPUT_V1 | DS5EXT_MASK_INPUT_STATUS_V1 | DS5EXT_MASK_PAD_AUDIO_V1));
     CHECK(parse("pad-audio=2") == 0);
+    CHECK(parse(DS5EXT_SDP_OFFER_PAD_SPEAKER) == (DS5EXT_MASK_OUTPUT_V1 | DS5EXT_MASK_INPUT_STATUS_V1 | DS5EXT_MASK_PAD_SPEAKER_V1));
+    CHECK(parse("pad-speaker=2") == 0);
+    CHECK(parse("pad-speakers=1") == 0);
+    CHECK(parse("output=1,pad-audio=1,pad-speaker=1") == (DS5EXT_MASK_OUTPUT_V1 | DS5EXT_MASK_PAD_AUDIO_V1 | DS5EXT_MASK_PAD_SPEAKER_V1));
     CHECK(parse("output=1") == DS5EXT_MASK_OUTPUT_V1);
     CHECK(parse("input-status=1") == DS5EXT_MASK_INPUT_STATUS_V1);
     CHECK(parse("output=1;input-status=1") == 3);
