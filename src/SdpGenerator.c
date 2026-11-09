@@ -6,11 +6,11 @@
 // "pad-audio" (four-channel haptics PCM with the pad's speaker pair) is offered only when the application asks for it:
 // the wired path stays on the two haptic channels unless it is switched on.
 // 0: no pad audio. 1: "pad-audio" (the haptics PCM packet carries four channels, haptics on 3 and 4). 2: "pad-speaker" (IR v2 haptics, and a
-// speaker-only PCM packet next to them).
+// speaker-only PCM packet next to them). 3: actuator PCM and IR, with no speaker token.
 volatile int Ds5PadAudioOfferMode = 0;
 
 void LiSetDs5PadAudioOffer(int mode) {
-    Ds5PadAudioOfferMode = mode < 0 ? 0 : (mode > 2 ? 2 : mode);
+    Ds5PadAudioOfferMode = mode < 0 ? 0 : (mode > 3 ? 3 : mode);
 }
 
 // Macros to redirect global access to context

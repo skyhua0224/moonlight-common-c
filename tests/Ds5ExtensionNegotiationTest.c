@@ -143,6 +143,22 @@ static void testClientOffer(void) {
         }
         free(withPadSpeaker);
     }
+    // Mode 3: actuator PCM plus IR, and no speaker token. A 547-byte speaker report
+    // does not keep up on Bluetooth, so this offer leaves the pad speaker off.
+    LiSetDs5PadAudioOffer(3);
+    {
+        char* hapticsOnly = sdpFor(ctx);
+        const char* line = hapticsOnly != NULL ? strstr(hapticsOnly, "ds5Extensions:output=1,input-status=1") : NULL;
+        CHECK(line != NULL && strncmp(line, "ds5Extensions:output=1,input-status=1", 37) == 0 && line[37] != ',');
+        const char* flags = hapticsOnly != NULL ? strstr(hapticsOnly, "x-ml-general.featureFlags:") : NULL;
+        CHECK(flags != NULL);
+        if (flags != NULL) {
+            const unsigned long value = strtoul(flags + strlen("x-ml-general.featureFlags:"), NULL, 10);
+            CHECK((value & ML_FF_DS5_HAPTICS_PCM) != 0);
+            CHECK((value & ML_FF_DS5_HAPTICS_IR_V2) != 0);
+        }
+        free(hapticsOnly);
+    }
     LiSetDs5PadAudioOffer(0);
     ctx->ListenerCallbacks.ds5HapticsIrV2 = NULL;
     ctx->ListenerCallbacks.ds5HapticsPcm = NULL;

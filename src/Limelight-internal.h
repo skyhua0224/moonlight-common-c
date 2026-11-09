@@ -75,7 +75,7 @@ extern int AppVersionQuad[4];
 // Client feature flags for x-ml-general.featureFlags SDP attribute
 #define ML_FF_FEC_STATUS 0x01 // Client sends SS_FRAME_FEC_STATUS for frame losses
 #define ML_FF_SESSION_ID_V1 0x02 // Client supports X-SS-Ping-Payload and X-SS-Connect-Data
-extern volatile int Ds5PadAudioOfferMode;  // SdpGenerator.c: 0 off, 1 pad-audio, 2 pad-speaker
+extern volatile int Ds5PadAudioOfferMode;  // SdpGenerator.c: 0 off, 1 pad-audio, 2 pad-speaker, 3 haptics PCM
 #define ML_FF_DS5_HAPTICS_PCM 0x04 // Client accepts authored DualSense PCM on the control stream
 #define ML_FF_DS5_HAPTICS_IR_V2 0x08 // Client selected simulated DualSense and accepts authored IR v2
 #define ML_FF_REMOTE_TEXT_CONTEXT 0x10 // Client accepts remote text context updates
