@@ -109,6 +109,23 @@ static void testClientOffer(void) {
               strstr(withPadAudio, "a=x-ml-general.ds5Extensions:output=1,input-status=1,pad-audio=1") != NULL);
         free(withPadAudio);
     }
+    // Full PCM keeps the IR callback. The offer is pad-audio, and both feature flags are set:
+    // a host that grants PCM sends 0x550A, and a host that does not still has IR.
+    ctx->ListenerCallbacks.ds5HapticsIrV2 = ignoreIr;
+    {
+        char* both = sdpFor(ctx);
+        CHECK(both != NULL &&
+              strstr(both, "a=x-ml-general.ds5Extensions:output=1,input-status=1,pad-audio=1") != NULL);
+        const char* flags = both != NULL ? strstr(both, "x-ml-general.featureFlags:") : NULL;
+        CHECK(flags != NULL);
+        if (flags != NULL) {
+            const unsigned long value = strtoul(flags + strlen("x-ml-general.featureFlags:"), NULL, 10);
+            CHECK((value & ML_FF_DS5_HAPTICS_PCM) != 0);
+            CHECK((value & ML_FF_DS5_HAPTICS_IR_V2) != 0);
+        }
+        free(both);
+    }
+    ctx->ListenerCallbacks.ds5HapticsIrV2 = NULL;
     // "pad-speaker": IR haptics plus the speaker pair. The PCM feature flag (0x04) must not be offered, or a host that does not know the
     // token sees PCM and IR together and takes the raw PCM route, which sends no IR.
     ctx->ListenerCallbacks.ds5HapticsIrV2 = ignoreIr;

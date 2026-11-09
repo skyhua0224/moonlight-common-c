@@ -451,7 +451,10 @@ int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverI
         goto Cleanup;
     }
 
-    if (clCallbacks != NULL && clCallbacks->ds5HapticsPcm != NULL && clCallbacks->ds5HapticsIrV2 != NULL && Ds5PadAudioOfferMode != 2) {
+    // Mode 2 keeps IR and a speaker-only PCM packet, with the PCM feature flag off.
+    // Mode 1 is full PCM (PCM feature flag and pad-audio) and still accepts IR when the host does not grant PCM.
+    if (clCallbacks != NULL && clCallbacks->ds5HapticsPcm != NULL && clCallbacks->ds5HapticsIrV2 != NULL &&
+            Ds5PadAudioOfferMode != 2 && Ds5PadAudioOfferMode != 1) {
         Limelog("Physical and simulated DualSense haptics modes are mutually exclusive\n");
         LC_ASSERT(false);
         err = -1;
