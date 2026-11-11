@@ -1431,6 +1431,13 @@ int performRtspHandshakeCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serv
       return -1;
     }
 
+    // The chosen interface must be set before the first datagram leaves
+    if (bindEnetSocketToInterface((SOCKET)client->socket, RemoteAddr.ss_family) != 0) {
+      enet_host_destroy(client);
+      client = NULL;
+      return -1;
+    }
+
     // Connect to the host
     peer = enet_host_connect(client, &address, 1, 0);
     if (peer == NULL) {

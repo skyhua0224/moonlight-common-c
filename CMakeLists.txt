@@ -138,6 +138,13 @@ if (BUILD_TESTING)
   target_link_libraries(ds5-extension-negotiation-tests PRIVATE moonlight-common-c)
   add_test(NAME ds5-extension-negotiation-tests COMMAND ds5-extension-negotiation-tests)
 
+  add_executable(bound-interface-tests
+    tests/BoundInterfaceTest.c
+  )
+  target_include_directories(bound-interface-tests PRIVATE src)
+  target_link_libraries(bound-interface-tests PRIVATE moonlight-common-c)
+  add_test(NAME bound-interface-tests COMMAND bound-interface-tests)
+
   add_executable(ds5-haptics-protocol-golden-tests
     tests/Ds5HapticsStreamGoldenTest.c
     src/Ds5HapticsStream.c

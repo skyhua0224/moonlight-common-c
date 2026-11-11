@@ -3162,6 +3162,14 @@ int startControlStreamCtx(PML_CONTROL_STREAM_CONTEXT ctx) {
             return -1;
         }
 
+        // The chosen interface must be set before the first datagram leaves
+        if (bindEnetSocketToInterface((SOCKET)ctx->client->socket, RemoteAddr.ss_family) != 0) {
+            ctx->stopping = true;
+            enet_host_destroy(ctx->client);
+            ctx->client = NULL;
+            return -1;
+        }
+
         ctx->client->intercept = ignoreDisconnectIntercept;
 
         // Enable high priority QoS marking on control stream traffic

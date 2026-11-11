@@ -470,6 +470,76 @@ int setSocketNonBlocking(SOCKET s, bool enabled) {
 #endif
 }
 
+static unsigned int boundInterfaceIndex;
+static LI_BOUND_INTERFACE_STATUS boundInterfaceStatus;
+
+int LiBindSocketToInterface(int socketFd, int addressFamily, unsigned int ifIndex) {
+#if defined(LC_DARWIN) && defined(IP_BOUND_IF)
+    int err;
+
+    if (ifIndex == 0) {
+        return 0;
+    }
+
+    if (addressFamily == AF_INET) {
+        err = setsockopt(socketFd, IPPROTO_IP, IP_BOUND_IF, &ifIndex, sizeof(ifIndex));
+    }
+    else if (addressFamily == AF_INET6) {
+        err = setsockopt(socketFd, IPPROTO_IPV6, IPV6_BOUND_IF, &ifIndex, sizeof(ifIndex));
+    }
+    else {
+        return EAFNOSUPPORT;
+    }
+
+    return err < 0 ? errno : 0;
+#else
+    (void)socketFd;
+    (void)addressFamily;
+    return ifIndex == 0 ? 0 : ENOTSUP;
+#endif
+}
+
+int LiSetBoundInterface(unsigned int ifIndex) {
+    memset(&boundInterfaceStatus, 0, sizeof(boundInterfaceStatus));
+    boundInterfaceStatus.ifIndex = ifIndex;
+    boundInterfaceIndex = ifIndex;
+#if defined(LC_DARWIN) && defined(IP_BOUND_IF)
+    return 0;
+#else
+    return ifIndex == 0 ? 0 : -1;
+#endif
+}
+
+void LiGetBoundInterfaceStatus(LI_BOUND_INTERFACE_STATUS* status) {
+    *status = boundInterfaceStatus;
+}
+
+// Returns 0 or an errno. Counts the outcome per kind and logs the first failure of each kind.
+static int applyBoundInterface(SOCKET s, int addressFamily, int kind) {
+    unsigned int ifIndex = boundInterfaceIndex;
+    int err;
+
+    if (ifIndex == 0) {
+        return 0;
+    }
+
+    err = LiBindSocketToInterface((int)s, addressFamily, ifIndex);
+    if (err == 0) {
+        __sync_fetch_and_add(&boundInterfaceStatus.ok[kind], 1);
+    }
+    else {
+        boundInterfaceStatus.lastError = err;
+        if (__sync_fetch_and_add(&boundInterfaceStatus.failed[kind], 1) == 0) {
+            Limelog("Binding socket (kind %d) to interface index %u failed: %d\n", kind, ifIndex, err);
+        }
+    }
+    return err;
+}
+
+int bindEnetSocketToInterface(SOCKET s, int addressFamily) {
+    return applyBoundInterface(s, addressFamily, LI_BOUND_IF_KIND_ENET);
+}
+
 SOCKET createSocket(int addressFamily, int socketType, int protocol, bool nonBlocking) {
     SOCKET s;
 
@@ -477,6 +547,16 @@ SOCKET createSocket(int addressFamily, int socketType, int protocol, bool nonBlo
     if (s == INVALID_SOCKET) {
         Limelog("socket() failed: %d\n", (int)LastSocketError());
         return INVALID_SOCKET;
+    }
+
+    // A pinned stream binds before anything is sent. No fallback: a failed bind fails the socket.
+    {
+        int bindErr = applyBoundInterface(s, addressFamily, socketType == SOCK_STREAM ? LI_BOUND_IF_KIND_TCP : LI_BOUND_IF_KIND_UDP);
+        if (bindErr != 0) {
+            closeSocket(s);
+            SetLastSocketError(bindErr);
+            return INVALID_SOCKET;
+        }
     }
 
 #ifdef LC_DARWIN

@@ -937,6 +937,29 @@ const char *LiGetStageName(int stage);
 bool LiGetEstimatedRttInfo(uint32_t *estimatedRtt,
                            uint32_t *estimatedRttVariance);
 
+// Pin every socket a stream opens (RTSP/control/input TCP, ENet control UDP, video/audio/mic UDP)
+// to one network interface. ifIndex is an if_nametoindex() value; 0 means no pinning (the default).
+// Call it before LiStartConnection(). The socket is bound before connect() or the first send, so
+// nothing leaves through another interface. When the bind fails, the socket is not used and the
+// connection fails; there is no fallback. Returns 0, or -1 where the platform has no per-socket
+// interface binding (only Apple platforms do: IP_BOUND_IF / IPV6_BOUND_IF).
+// Setting the index also clears the status below.
+#define LI_BOUND_IF_KIND_TCP 0
+#define LI_BOUND_IF_KIND_UDP 1
+#define LI_BOUND_IF_KIND_ENET 2
+#define LI_BOUND_IF_KIND_COUNT 3
+typedef struct _LI_BOUND_INTERFACE_STATUS {
+    unsigned int ifIndex;
+    int ok[LI_BOUND_IF_KIND_COUNT];
+    int failed[LI_BOUND_IF_KIND_COUNT];
+    int lastError; // errno of the last failed bind, 0 if none
+} LI_BOUND_INTERFACE_STATUS;
+int LiSetBoundInterface(unsigned int ifIndex);
+void LiGetBoundInterfaceStatus(LI_BOUND_INTERFACE_STATUS* status);
+
+// Binds one already created socket to an interface for its address family. Returns 0 or an errno.
+int LiBindSocketToInterface(int socketFd, int addressFamily, unsigned int ifIndex);
+
 // Describes a streaming socket created by LiStartConnection(). fd is -1 when
 // the socket is unavailable (stream not started or not applicable).
 typedef struct _LI_STREAM_SOCKET {
