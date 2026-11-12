@@ -191,6 +191,26 @@ void LiSetDs5OutputExtensionCallback(ConnListenerDs5OutputExtension callback) {
   LiSetDs5OutputExtensionCallbackCtx(LiGetEffectiveConnectionContext(), callback);
 }
 
+void LiSetDs5HapticsStateCallbackCtx(PML_CONNECTION_CONTEXT ctx, ConnListenerDs5HapticsState callback) {
+  if (ctx != NULL) {
+    ctx->Ds5HapticsStateCallback = callback;
+  }
+}
+
+void LiSetDs5HapticsStateCallback(ConnListenerDs5HapticsState callback) {
+  LiSetDs5HapticsStateCallbackCtx(LiGetEffectiveConnectionContext(), callback);
+}
+
+void LiSetHostSessionStateCallbackCtx(PML_CONNECTION_CONTEXT ctx, ConnListenerHostSessionState callback) {
+  if (ctx != NULL) {
+    ctx->HostSessionStateCallback = callback;
+  }
+}
+
+void LiSetHostSessionStateCallback(ConnListenerHostSessionState callback) {
+  LiSetHostSessionStateCallbackCtx(LiGetEffectiveConnectionContext(), callback);
+}
+
 void LiInitializeServerInformation(PSERVER_INFORMATION serverInfo) {
   memset(serverInfo, 0, sizeof(*serverInfo));
 }

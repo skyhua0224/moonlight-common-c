@@ -34,6 +34,10 @@ if (BUILD_SHARED_LIBS_OVERRIDE)
 endif()
 
 target_link_libraries(moonlight-common-c PRIVATE enet)
+if(UNIX AND NOT APPLE)
+  # llround() and friends live in libm on Linux
+  target_link_libraries(moonlight-common-c PRIVATE m)
+endif()
 
 if(MSVC)
   target_compile_options(moonlight-common-c PRIVATE /W3 /wd4100 /wd4232 /wd5105 /WX /std:c11 /experimental:c11atomics)
@@ -85,6 +89,121 @@ target_include_directories(moonlight-common-c PRIVATE
 target_compile_definitions(moonlight-common-c PRIVATE HAS_SOCKLEN_T)
 
 if (BUILD_TESTING)
+  add_executable(control-only-cleanup-tests tests/ControlOnlyCleanupTest.c)
+  target_include_directories(control-only-cleanup-tests PRIVATE src enet/include)
+  target_compile_definitions(control-only-cleanup-tests PRIVATE HAS_SOCKLEN_T)
+  if(MSVC)
+    target_compile_options(control-only-cleanup-tests PRIVATE /W3 /WX /experimental:c11atomics)
+  endif()
+  add_test(NAME control-only-cleanup-tests COMMAND control-only-cleanup-tests)
+
+  add_executable(endpoint-refresh-protocol-tests tests/EndpointRefreshProtocolTest.c src/EndpointRefreshProtocol.c)
+  add_executable(endpoint-refresh-client-tests tests/EndpointRefreshClientTest.c src/EndpointRefresh.c src/EndpointRefreshProtocol.c)
+  foreach(endpoint_target endpoint-refresh-protocol-tests endpoint-refresh-client-tests)
+    target_include_directories(${endpoint_target} PRIVATE src enet/include)
+    target_compile_definitions(${endpoint_target} PRIVATE HAS_SOCKLEN_T)
+    if(USE_MBEDTLS)
+      target_compile_definitions(${endpoint_target} PRIVATE USE_MBEDTLS)
+      target_include_directories(${endpoint_target} SYSTEM PRIVATE ${MBEDTLS_INCLUDE_DIRS})
+      if(MBEDTLS_FOUND)
+        target_link_libraries(${endpoint_target} PRIVATE ${MBEDCRYPTO_LIBRARY})
+      else()
+        target_link_libraries(${endpoint_target} PRIVATE mbedcrypto)
+      endif()
+    else()
+      target_include_directories(${endpoint_target} SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
+      target_link_libraries(${endpoint_target} PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
+    endif()
+    if(MSVC)
+      target_compile_options(${endpoint_target} PRIVATE /W3 /WX /experimental:c11atomics)
+    else()
+      target_compile_options(${endpoint_target} PRIVATE -Wall -Wextra -Werror)
+    endif()
+    add_test(NAME ${endpoint_target} COMMAND ${endpoint_target})
+  endforeach()
+  if(WIN32)
+    target_link_libraries(endpoint-refresh-client-tests PRIVATE ws2_32)
+  else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(endpoint-refresh-client-tests PRIVATE Threads::Threads)
+  endif()
+
+  add_executable(mat-live-tests tests/MatLiveTest.c src/MatLivePlayback.c src/MatReceiver.c src/MatDepacketizer.c)
+  target_include_directories(mat-live-tests PRIVATE src)
+  if(USE_MBEDTLS)
+    target_compile_definitions(mat-live-tests PRIVATE USE_MBEDTLS)
+    target_include_directories(mat-live-tests SYSTEM PRIVATE ${MBEDTLS_INCLUDE_DIRS})
+    if(MBEDTLS_FOUND)
+      target_link_libraries(mat-live-tests PRIVATE ${MBEDCRYPTO_LIBRARY})
+    else()
+      target_link_libraries(mat-live-tests PRIVATE mbedcrypto)
+    endif()
+  else()
+    target_include_directories(mat-live-tests SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(mat-live-tests PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
+  endif()
+  add_test(NAME mat-live-tests COMMAND mat-live-tests)
+
+  add_executable(rtsp-parser-mat-tests tests/RtspParserMatTest.c src/RtspParser.c)
+  target_include_directories(rtsp-parser-mat-tests PRIVATE src enet/include)
+  target_compile_definitions(rtsp-parser-mat-tests PRIVATE HAS_SOCKLEN_T)
+  add_test(NAME rtsp-parser-mat-tests COMMAND rtsp-parser-mat-tests)
+
+  get_target_property(_common_c_type moonlight-common-c TYPE)
+  if(_common_c_type STREQUAL "STATIC_LIBRARY")
+    add_executable(mat-live-rtp-tests tests/MatLiveRtpTest.c)
+    target_include_directories(mat-live-rtp-tests PRIVATE enet/include
+      $<TARGET_PROPERTY:moonlight-common-c,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(mat-live-rtp-tests PRIVATE
+      $<TARGET_PROPERTY:moonlight-common-c,COMPILE_DEFINITIONS>)
+    target_link_libraries(mat-live-rtp-tests PRIVATE moonlight-common-c)
+    if(MSVC)
+      target_compile_options(mat-live-rtp-tests PRIVATE /experimental:c11atomics)
+    endif()
+    if(NOT USE_MBEDTLS)
+      target_include_directories(mat-live-rtp-tests SYSTEM PRIVATE ${OPENSSL_INCLUDE_DIR})
+      target_link_libraries(mat-live-rtp-tests PRIVATE ${OPENSSL_CRYPTO_LIBRARY})
+    endif()
+    add_test(NAME mat-live-rtp-tests COMMAND mat-live-rtp-tests)
+    add_executable(audio-codec-selection-tests tests/AudioCodecSelectionTest.c)
+    target_include_directories(audio-codec-selection-tests PRIVATE
+      enet/include $<TARGET_PROPERTY:moonlight-common-c,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(audio-codec-selection-tests PRIVATE
+      $<TARGET_PROPERTY:moonlight-common-c,COMPILE_DEFINITIONS>)
+    target_compile_options(audio-codec-selection-tests PRIVATE
+      $<TARGET_PROPERTY:moonlight-common-c,COMPILE_OPTIONS>)
+    target_link_libraries(audio-codec-selection-tests PRIVATE moonlight-common-c)
+    add_test(NAME audio-codec-selection-tests COMMAND audio-codec-selection-tests)
+
+    # This test includes the sender and links its internal platform/queue helpers.
+    add_executable(controller-handoff-queue-tests tests/ControllerHandoffQueueTest.c)
+    target_include_directories(controller-handoff-queue-tests PRIVATE src enet/include)
+    target_link_libraries(controller-handoff-queue-tests PRIVATE moonlight-common-c)
+    target_compile_definitions(controller-handoff-queue-tests PRIVATE LC_DEBUG HAS_SOCKLEN_T)
+    # Assertions also execute the sends in release builds.
+    if(MSVC)
+      target_compile_options(controller-handoff-queue-tests PRIVATE /UNDEBUG /std:c11 /experimental:c11atomics)
+    else()
+      target_compile_options(controller-handoff-queue-tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME controller-handoff-queue-tests COMMAND controller-handoff-queue-tests)
+    add_executable(input-stream-shutdown-tests tests/InputStreamShutdownTest.c)
+    target_include_directories(input-stream-shutdown-tests PRIVATE src enet/include)
+    target_compile_options(input-stream-shutdown-tests PRIVATE
+      $<TARGET_PROPERTY:moonlight-common-c,COMPILE_OPTIONS>)
+    target_link_libraries(input-stream-shutdown-tests PRIVATE moonlight-common-c)
+    add_test(NAME input-stream-shutdown-tests COMMAND input-stream-shutdown-tests)
+    set_tests_properties(input-stream-shutdown-tests PROPERTIES TIMEOUT 5)
+    add_executable(controller-motion-queue-tests tests/ControllerMotionQueueTest.c)
+    target_include_directories(controller-motion-queue-tests PRIVATE src enet/include)
+    target_link_libraries(controller-motion-queue-tests PRIVATE moonlight-common-c)
+    target_compile_definitions(controller-motion-queue-tests PRIVATE LC_DEBUG HAS_SOCKLEN_T)
+    if(MSVC)
+      target_compile_options(controller-motion-queue-tests PRIVATE /std:c11 /experimental:c11atomics)
+    endif()
+    add_test(NAME controller-motion-queue-tests COMMAND controller-motion-queue-tests)
+  endif()
+
   add_executable(control-stream-packet-tests
     tests/ControlStreamPacketTest.c
   )
@@ -157,6 +276,15 @@ if (BUILD_TESTING)
   endif()
   add_test(NAME ds5-haptics-protocol-golden-tests COMMAND ds5-haptics-protocol-golden-tests)
 
+  add_executable(ds5-haptics-state-golden-tests tests/Ds5HapticsStateGoldenTest.c)
+  target_include_directories(ds5-haptics-state-golden-tests PRIVATE src)
+  if (MSVC)
+    target_compile_options(ds5-haptics-state-golden-tests PRIVATE /W3 /WX /UNDEBUG)
+  else()
+    target_compile_options(ds5-haptics-state-golden-tests PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+  endif()
+  add_test(NAME ds5-haptics-state-golden-tests COMMAND ds5-haptics-state-golden-tests)
+
   add_executable(ds5-haptics-ir-protocol-golden-tests
     tests/Ds5HapticsIrStreamGoldenTest.c
     src/Ds5HapticsIrStream.c
@@ -168,6 +296,18 @@ if (BUILD_TESTING)
     target_compile_options(ds5-haptics-ir-protocol-golden-tests PRIVATE -Wall -Wextra -Werror)
   endif()
   add_test(NAME ds5-haptics-ir-protocol-golden-tests COMMAND ds5-haptics-ir-protocol-golden-tests)
+
+  if(_common_c_type STREQUAL "STATIC_LIBRARY")
+    add_executable(ds5-haptics-negotiation-tests tests/Ds5HapticsNegotiationTest.c)
+    target_include_directories(ds5-haptics-negotiation-tests PRIVATE
+      enet/include $<TARGET_PROPERTY:moonlight-common-c,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(ds5-haptics-negotiation-tests PRIVATE
+      $<TARGET_PROPERTY:moonlight-common-c,COMPILE_DEFINITIONS>)
+    target_compile_options(ds5-haptics-negotiation-tests PRIVATE
+      $<TARGET_PROPERTY:moonlight-common-c,COMPILE_OPTIONS>)
+    target_link_libraries(ds5-haptics-negotiation-tests PRIVATE moonlight-common-c)
+    add_test(NAME ds5-haptics-negotiation-tests COMMAND ds5-haptics-negotiation-tests)
+  endif()
 
   add_executable(pyrowave-protocol-golden-tests
     tests/PyrowaveProtocolGoldenTest.c

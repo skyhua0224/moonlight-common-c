@@ -85,3 +85,55 @@ bool processDs5HapticsIrStreamPacket(const uint8_t* payload,
     callback(&frame, context);
     return true;
 }
+
+static void captureBaseFrame(const LI_DS5_HAPTICS_IR_FRAME_V2* base, void* context) {
+    *(LI_DS5_HAPTICS_IR_FRAME_V2*)context = *base;
+}
+
+bool processDs5HapticsIrExtendedStreamPacket(const uint8_t* payload,
+                                      int payloadLength,
+                                      Ds5HapticsIrExtendedStreamCallback callback,
+                                      void* context) {
+    LI_DS5_HAPTICS_IR_EXTENDED_FRAME frame;
+    const uint8_t* extension;
+    unsigned int i;
+    if (payload == NULL || callback == NULL ||
+            payloadLength < DS5_HAPTICS_IR_EXTENDED_STREAM_BASE_SIZE ||
+            payloadLength > DS5_HAPTICS_IR_EXTENDED_STREAM_MAX_SIZE) return false;
+    extension = payload + DS5_HAPTICS_IR_STREAM_WIRE_SIZE;
+    if (extension[0] != DS5_HAPTICS_IR_EXTENSION_VERSION ||
+            extension[1] > LI_DS5_HAPTICS_IR_EXTENDED_MAX_EVENTS ||
+            readLe16(extension + 2) != payloadLength - DS5_HAPTICS_IR_STREAM_WIRE_SIZE ||
+            payloadLength != DS5_HAPTICS_IR_EXTENDED_STREAM_BASE_SIZE +
+                extension[1] * DS5_HAPTICS_IR_EXTENDED_STREAM_EVENT_SIZE) return false;
+
+    memset(&frame, 0, sizeof(frame));
+    // Reuse the production v2 decoder, including its unchanged units and guards.
+    if (!processDs5HapticsIrStreamPacket(payload, DS5_HAPTICS_IR_STREAM_WIRE_SIZE,
+                                        captureBaseFrame, &frame.base)) return false;
+    if (frame.base.sourceFrameCount == 0 &&
+            !(frame.base.flags & LI_DS5_HAPTICS_IR_FLAG_STREAM_END)) return false;
+    frame.epoch = readLe32(extension + 4);
+    frame.windowEndUs = readLe64(extension + 8);
+    frame.eventCount = extension[1];
+    if (frame.windowEndUs < frame.base.timestampUs) return false;
+    for (i = 0; i < 2; i++) {
+        frame.lanes[i].continuousLow = readLeFloat(extension + 16 + i * 8);
+        frame.lanes[i].continuousHigh = readLeFloat(extension + 20 + i * 8);
+        if (!isNormalized(frame.lanes[i].continuousLow) ||
+                !isNormalized(frame.lanes[i].continuousHigh)) return false;
+    }
+    for (i = 0; i < frame.eventCount; i++) {
+        const uint8_t* event = payload + DS5_HAPTICS_IR_EXTENDED_STREAM_BASE_SIZE +
+            i * DS5_HAPTICS_IR_EXTENDED_STREAM_EVENT_SIZE;
+        LI_DS5_HAPTICS_IR_EVENT* out = &frame.events[i];
+        out->eventId = readLe32(event);
+        out->sourceTimeUs = readLe64(event + 4);
+        out->leftStrength = readLeFloat(event + 12);
+        out->rightStrength = readLeFloat(event + 16);
+        if (out->sourceTimeUs > frame.windowEndUs ||
+                !isNormalized(out->leftStrength) || !isNormalized(out->rightStrength)) return false;
+    }
+    callback(&frame, context);
+    return true;
+}

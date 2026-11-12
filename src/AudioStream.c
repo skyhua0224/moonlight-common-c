@@ -1,4 +1,14 @@
 #include "Limelight-internal.h"
+#include "EndpointRefresh.h"
+#include "MatLivePlayback.h"
+#include <stdatomic.h>
+
+// Live MAT state is process-wide: one MAT playback session at a time.
+static atomic_bool matInputEnded;
+static atomic_ullong matLastAcceptedMs;
+static MAT_LIVE_PLAYBACK* matLive;
+static LI_MAT_PLAYBACK_CALLBACKS matCallbacks;
+static bool matPlaybackFailedReported, matPlaybackCompleteReported;
 
 #ifdef AudioPortNumber
 #undef AudioPortNumber
@@ -102,6 +112,47 @@ static void logChosenOpusConfig(const char *label,
             opusConfig->coupledStreams, opusConfig->samplesPerFrame, mappingStr);
 }
 
+void LiSetMatPlaybackCallbacks(const LI_MAT_PLAYBACK_CALLBACKS* callbacks) {
+    if (callbacks) matCallbacks = *callbacks; else memset(&matCallbacks, 0, sizeof(matCallbacks));
+}
+
+static int matEnd(void* context, uint64_t cycles) {
+    // A verified END may take time to drain the hardware. Stop the network
+    // watchdog before that bounded drain, not before authentication.
+    atomic_store_explicit(&matInputEnded, true, memory_order_relaxed);
+    return matCallbacks.end(context, cycles);
+}
+
+static bool matInputTimedOut(PML_AUDIO_STREAM_CONTEXT ctx) {
+    if (!AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec) ||
+            atomic_load_explicit(&matInputEnded, memory_order_relaxed)) return false;
+    // The decoder can publish a newer timestamp while the receive thread runs.
+    // Load it before reading the clock so unsigned subtraction cannot underflow.
+    uint64_t last = atomic_load_explicit(&matLastAcceptedMs, memory_order_relaxed);
+    uint64_t now = PltGetMillis();
+    return now >= last && now - last >= 2000;
+}
+
+static void failMatInput(void) { MatLivePlaybackFail(matLive); }
+
+static void consumeAudio(PML_AUDIO_STREAM_CONTEXT ctx, char* data, int size) {
+    if (ctx->connectionContext->NegotiatedAudioCodec == AUDIO_CODEC_MAT_LIVE) {
+        int result = MatLivePlaybackPush(matLive, (unsigned char*)data, (size_t)(size > 0 ? size : 0));
+        if (result >= 0) atomic_store_explicit(&matLastAcceptedMs, PltGetMillis(), memory_order_relaxed);
+        if (result < 0 && !matPlaybackFailedReported) {
+            matPlaybackFailedReported = true;
+            Limelog("Live MAT authentication/sequence/source failed\n");
+            ListenerCallbacks.connectionTerminated(-1);
+        }
+        else if (result == 2 && !matPlaybackCompleteReported) {
+            matPlaybackCompleteReported = true;
+            Limelog("Live MAT authenticated EOS and renderer drain completed\n");
+        }
+        return;
+    }
+    AudioCallbacks.decodeAndPlaySample(data, size);
+}
+
 static void AudioPingThreadProc(void* context) {
     PML_AUDIO_STREAM_CONTEXT ctx = (PML_AUDIO_STREAM_CONTEXT)context;
     LiSetThreadConnectionContext(ctx->connectionContext);
@@ -119,7 +170,10 @@ static void AudioPingThreadProc(void* context) {
     // to sending a packet prior to the host PC binding to that port.
     int pingCount = 0;
     while (!PltIsThreadInterrupted(&ctx->udpPingThread)) {
-        if (AudioPingPayload.payload[0] != 0) {
+        if (LiErClientPing(&ctx->endpointRefresh)) {
+            // Negotiated keepalive; audio may still be waiting for ANNOUNCE.
+        }
+        else if (AudioPingPayload.payload[0] != 0) {
             pingCount++;
             AudioPingPayload.sequenceNumber = BE32(pingCount);
 
@@ -137,9 +191,12 @@ static void AudioPingThreadProc(void* context) {
 int initializeAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, PML_CONNECTION_CONTEXT connectionContext) {
     ctx->connectionContext = connectionContext;
     ctx->rtpSocket = INVALID_SOCKET;
+    // RTSP can still select Opus for a MAT preference. Final receive parameters
+    // are set in startAudioStreamCtx(), before either queue worker starts.
     LbqInitializeLinkedBlockingQueue(&ctx->packetQueue, 30);
     RtpaInitializeQueue(&ctx->rtpAudioQueue);
     ctx->lastSeq = 0;
+    matPlaybackFailedReported = matPlaybackCompleteReported = false;
     ctx->receivedDataFromPeer = false;
     ctx->pingThreadStarted = false;
     ctx->firstReceiveTime = 0;
@@ -179,9 +236,18 @@ int notifyAudioPortNegotiationCompleteCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
         return LastSocketFail();
     }
     LiRecordStreamSocketCtx(ctx->connectionContext, ctx->rtpSocket, STREAM_SOCKET_SLOT_AUDIO);
+    if (!LiErClientInitialize(&ctx->endpointRefresh, ctx->rtpSocket, LI_ER_AUDIO, AudioPingPayload.payload,
+            AudioPortNumber, SOCK_QOS_TYPE_AUDIO, 0)) {
+        closeSocket(ctx->rtpSocket);
+        ctx->rtpSocket = INVALID_SOCKET;
+        return -1;
+    }
 
     // We may receive audio before our threads are started, but that's okay. We'll
     // drop the first 1 second of audio packets to catch up with the backlog.
+    // MAT starts the authentic ping only AFTER its receiver/consumer are ready.
+    // The host waits for it, so no startup data is buffered or discarded.
+    if (AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec)) return 0;
     int err = PltCreateThread("AudioPing", AudioPingThreadProc, ctx, &ctx->udpPingThread);
     if (err != 0) {
         return err;
@@ -211,6 +277,7 @@ static void freePacketList(PLINKED_BLOCKING_QUEUE_ENTRY entry) {
 
 // Tear down the audio stream once we're done with it (context)
 void destroyAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
+    MatLivePlaybackClose(matLive); matLive = NULL;
     if (ctx->rtpSocket != INVALID_SOCKET) {
         if (ctx->pingThreadStarted) {
             PltInterruptThread(&ctx->udpPingThread);
@@ -221,6 +288,7 @@ void destroyAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
         ctx->rtpSocket = INVALID_SOCKET;
     }
 
+    LiErClientDestroy(&ctx->endpointRefresh);
     PltDestroyCryptoContext(ctx->audioDecryptionCtx);
     freePacketList(LbqDestroyLinkedBlockingQueue(&ctx->packetQueue));
     RtpaCleanupQueue(&ctx->rtpAudioQueue);
@@ -244,6 +312,10 @@ static bool queuePacketToLbq(PML_AUDIO_STREAM_CONTEXT ctx, PQUEUED_AUDIO_PACKET*
         }
         else if (err == LBQ_BOUND_EXCEEDED) {
             Limelog("Audio packet queue overflow\n");
+            if (AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec)) {
+                ListenerCallbacks.connectionTerminated(-1);
+                return false; // Don't flush a loss-intolerant stream or silently resume.
+            }
 
             // The audio queue is full, so free all existing items and try again
             freePacketList(LbqFlushQueueItems(&ctx->packetQueue));
@@ -259,18 +331,23 @@ static void decodeInputData(PML_AUDIO_STREAM_CONTEXT ctx, PQUEUED_AUDIO_PACKET p
     // packet. Trigger packet loss concealment logic in libopus by
     // invoking the decoder with a NULL buffer.
     if (packet->header.size == 0) {
-        AudioCallbacks.decodeAndPlaySample(NULL, 0);
+        consumeAudio(ctx, NULL, 0);
         return;
     }
 
     PRTP_PACKET rtp = (PRTP_PACKET)&packet->data[0];
     if (ctx->lastSeq != 0 && (unsigned short)(ctx->lastSeq + 1) != rtp->sequenceNumber) {
         Limelog("Network dropped audio data (expected %d, but received %d)\n", ctx->lastSeq + 1, rtp->sequenceNumber);
+        if (AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec)) {
+            failMatInput();
+            consumeAudio(ctx, NULL, 0);
+            return;
+        }
     }
 
     ctx->lastSeq = rtp->sequenceNumber;
 
-    if (AudioEncryptionEnabled) {
+    if (AudioEncryptionEnabled && ctx->connectionContext->NegotiatedAudioCodec != AUDIO_CODEC_MAT_LIVE) {
         // We must have room for the AES padding which may be written to the buffer
         unsigned char decryptedOpusData[ROUND_TO_PKCS7_PADDED_LEN(MAX_PACKET_SIZE)];
         unsigned char iv[16] = { 0 };
@@ -291,6 +368,10 @@ static void decodeInputData(PML_AUDIO_STREAM_CONTEXT ctx, PQUEUED_AUDIO_PACKET p
                                (unsigned char*)(rtp + 1), dataLength,
                                decryptedOpusData, &dataLength)) {
             Limelog("Failed to decrypt audio packet (sequence number: %u)\n", rtp->sequenceNumber);
+            if (AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec)) {
+                failMatInput();
+                consumeAudio(ctx, NULL, 0);
+            }
             LC_ASSERT_VT(false);
             return;
         }
@@ -310,7 +391,7 @@ static void decodeInputData(PML_AUDIO_STREAM_CONTEXT ctx, PQUEUED_AUDIO_PACKET p
         }
 #endif
 
-        AudioCallbacks.decodeAndPlaySample((char*)decryptedOpusData, dataLength);
+        consumeAudio(ctx, (char*)decryptedOpusData, dataLength);
     }
     else {
 #ifdef LC_DEBUG
@@ -327,7 +408,7 @@ static void decodeInputData(PML_AUDIO_STREAM_CONTEXT ctx, PQUEUED_AUDIO_PACKET p
         }
 #endif
 
-        AudioCallbacks.decodeAndPlaySample((char*)(rtp + 1), packet->header.size - sizeof(*rtp));
+        consumeAudio(ctx, (char*)(rtp + 1), packet->header.size - sizeof(*rtp));
     }
 }
 
@@ -342,7 +423,7 @@ static void AudioReceiveThreadProc(void* context) {
     int waitingForAudioMs;
 
     packet = NULL;
-    packetsToDrop = 500 / AudioPacketDuration;
+    packetsToDrop = AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec) ? 0 : 500 / AudioPacketDuration;
 
     if (setNonFatalRecvTimeoutMs(ctx->rtpSocket, UDP_RECV_POLL_TIMEOUT_MS) < 0) {
         // SO_RCVTIMEO failed, so use select() to wait
@@ -355,6 +436,11 @@ static void AudioReceiveThreadProc(void* context) {
 
     waitingForAudioMs = 0;
     while (!PltIsThreadInterrupted(&ctx->receiveThread)) {
+        if (matInputTimedOut(ctx)) {
+            Limelog("MAT validated input timed out (no verified EOS)\n");
+            ListenerCallbacks.connectionTerminated(-1);
+            break;
+        }
         if (packet == NULL) {
             packet = (PQUEUED_AUDIO_PACKET)malloc(sizeof(*packet));
             if (packet == NULL) {
@@ -364,8 +450,15 @@ static void AudioReceiveThreadProc(void* context) {
             }
         }
 
-        packet->header.size = recvUdpSocket(ctx->rtpSocket, &packet->data[0], MAX_PACKET_SIZE, useSelect);
-        if (packet->header.size < 0) {
+        packet->header.size = LiErClientRecv(&ctx->endpointRefresh, &ctx->rtpSocket, &packet->data[0], MAX_PACKET_SIZE, useSelect);
+        if (packet->header.size == LI_ER_RECV_HANDLED) {
+            continue;
+        }
+        else if (packet->header.size == LI_ER_RECV_FAILED) {
+            ListenerCallbacks.connectionTerminated(ML_ERROR_ENDPOINT_REFRESH_FAILED);
+            break;
+        }
+        else if (packet->header.size < 0) {
             Limelog("Audio Receive: recvUdpSocket() failed: %d\n", (int)LastSocketError());
             ListenerCallbacks.connectionTerminated(LastSocketFail());
             break;
@@ -395,7 +488,7 @@ static void AudioReceiveThreadProc(void* context) {
             ctx->receivedDataFromPeer = true;
             Limelog("Received first audio packet after %d ms\n", waitingForAudioMs);
 
-            if (ctx->firstReceiveTime != 0) {
+            if (ctx->firstReceiveTime != 0 && !AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec)) {
                 packetsToDrop += (uint32_t)(PltGetMillis() - ctx->firstReceiveTime) / AudioPacketDuration;
             }
 
@@ -418,6 +511,9 @@ static void AudioReceiveThreadProc(void* context) {
         rtp->ssrc = BE32(rtp->ssrc);
 
         queueStatus = RtpaAddPacket(&ctx->rtpAudioQueue, (PRTP_PACKET)&packet->data[0], (uint16_t)packet->header.size);
+        if (queueStatus != 0) {
+            LiErClientMedia(&ctx->endpointRefresh);
+        }
         if (RTPQ_HANDLE_NOW(queueStatus)) {
             if ((AudioCallbacks.capabilities & CAPABILITY_DIRECT_SUBMIT) == 0) {
                 if (!queuePacketToLbq(ctx, &packet)) {
@@ -516,6 +612,7 @@ void stopAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx) {
         PltJoinThread(&ctx->decoderThread);
     }
 
+    MatLivePlaybackClose(matLive); matLive = NULL;
     AudioCallbacks.cleanup();
 }
 
@@ -530,6 +627,10 @@ int startAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, void* audioContext, int ar
 
     LiSetThreadConnectionContext(ctx->connectionContext);
 
+    LC_ASSERT(ctx->packetQueue.currentSize == 0);
+    ctx->packetQueue.sizeBound = AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec) ? 512 : 30;
+    ctx->lastSeq = AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec) ? 3 : 0;
+
     if (HighQualitySurroundEnabled) {
         LC_ASSERT(HighQualitySurroundSupported);
         LC_ASSERT(HighQualityOpusConfig.channelCount != 0);
@@ -542,7 +643,7 @@ int startAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, void* audioContext, int ar
         chosenConfig = NormalQualityOpusConfig;
     }
 
-    chosenConfig.samplesPerFrame = 48 * AudioPacketDuration;
+    chosenConfig.samplesPerFrame = AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec) ? 960 : 48 * AudioPacketDuration;
     Limelog("Audio stream starting: highQualityEnabled=%d highQualitySupported=%d audioPacketDuration=%d\n",
             HighQualitySurroundEnabled ? 1 : 0,
             HighQualitySurroundSupported ? 1 : 0,
@@ -554,6 +655,17 @@ int startAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, void* audioContext, int ar
         return err;
     }
 
+    LI_MAT_PLAYBACK_CALLBACKS matPlaybackCallbacks = matCallbacks;
+    matPlaybackCallbacks.end = matCallbacks.end ? matEnd : NULL;
+    if (AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec)) {
+        atomic_store_explicit(&matInputEnded, false, memory_order_relaxed);
+        atomic_store_explicit(&matLastAcceptedMs, PltGetMillis(), memory_order_relaxed);
+    }
+    if (ctx->connectionContext->NegotiatedAudioCodec == AUDIO_CODEC_MAT_LIVE) {
+        matLive = MatLivePlaybackOpen(&ctx->connectionContext->MatLiveProfile,
+                                      (const uint8_t*)StreamConfig.remoteInputAesKey, &matPlaybackCallbacks);
+        if (!matLive) { AudioCallbacks.cleanup(); return -1; }
+    }
     AudioCallbacks.start();
 
     err = PltCreateThread("AudioRecv", AudioReceiveThreadProc, ctx, &ctx->receiveThread);
@@ -576,6 +688,11 @@ int startAudioStreamCtx(PML_AUDIO_STREAM_CONTEXT ctx, void* audioContext, int ar
         }
     }
 
+    if (AUDIO_CODEC_IS_MAT(ctx->connectionContext->NegotiatedAudioCodec) && !ctx->pingThreadStarted) {
+        err = PltCreateThread("AudioPing", AudioPingThreadProc, ctx, &ctx->udpPingThread);
+        if (err != 0) { stopAudioStreamCtx(ctx); return err; }
+        ctx->pingThreadStarted = true;
+    }
     return 0;
 }
 

@@ -30,6 +30,9 @@ typedef struct _LINKED_BLOCKING_QUEUE {
 
 int LbqInitializeLinkedBlockingQueue(PLINKED_BLOCKING_QUEUE queueHead, int sizeBound);
 int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOCKING_QUEUE_ENTRY entry);
+// Atomically offer an already linked list. Failure leaves every entry with the caller.
+int LbqOfferQueueItems(PLINKED_BLOCKING_QUEUE queueHead, PLINKED_BLOCKING_QUEUE_ENTRY first,
+                       PLINKED_BLOCKING_QUEUE_ENTRY last, int count);
 int LbqWaitForQueueElement(PLINKED_BLOCKING_QUEUE queueHead, void** data);
 int LbqPollQueueElement(PLINKED_BLOCKING_QUEUE queueHead, void** data);
 int LbqPeekQueueElement(PLINKED_BLOCKING_QUEUE queueHead, void** data);

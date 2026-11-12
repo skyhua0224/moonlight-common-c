@@ -1,10 +1,12 @@
 #pragma once
-
 #include "Platform.h"
+#include "MatLiveProfile.h"
+
 #include "Limelight.h"
 #include "PlatformSockets.h"
 #include "PlatformThreads.h"
 #include "PlatformCrypto.h"
+#include "EndpointRefresh.h"
 #include "Video.h"
 #include "Input.h"
 #include "RtpAudioQueue.h"
@@ -42,7 +44,6 @@ extern int AppVersionQuad[4];
 #define CTRL_CHANNEL_MOUSE        0x03
 #define CTRL_CHANNEL_PEN          0x04
 #define CTRL_CHANNEL_TOUCH        0x05
-#define CTRL_CHANNEL_UTF8         0x06
 #define CTRL_CHANNEL_GAMEPAD_BASE 0x10 // 0x10 to 0x1F by controller index
 #define CTRL_CHANNEL_SENSOR_BASE  0x20 // 0x20 to 0x2F by controller index
 #define CTRL_CHANNEL_COUNT        0x30
@@ -72,14 +73,21 @@ extern int AppVersionQuad[4];
 #define IS_SUNSHINE() (AppVersionQuad[3] < 0)
 #define IS_SUNSHINE_CTX(ctx) (ctx->AppVersionQuad[3] < 0)
 
-// Client feature flags for x-ml-general.featureFlags SDP attribute
+// Client feature flags for x-ml-general.featureFlags SDP attribute.
+// Existing fork assignments are frozen. New fork-only features allocate from
+// 0x8000 downward; see docs/protocol-extension-registry.md.
 #define ML_FF_FEC_STATUS 0x01 // Client sends SS_FRAME_FEC_STATUS for frame losses
 #define ML_FF_SESSION_ID_V1 0x02 // Client supports X-SS-Ping-Payload and X-SS-Connect-Data
 extern volatile int Ds5PadAudioOfferMode;  // SdpGenerator.c: 0 off, 1 pad-audio, 2 pad-speaker, 3 haptics PCM
 #define ML_FF_DS5_HAPTICS_PCM 0x04 // Client accepts authored DualSense PCM on the control stream
 #define ML_FF_DS5_HAPTICS_IR_V2 0x08 // Client selected simulated DualSense and accepts authored IR v2
+#define ML_FF_DS5_HAPTICS_IR_EXTENDED 0x80 // Client accepts continuous-state/source-event v2 IR enhancement (0x550B)
 #define ML_FF_REMOTE_TEXT_CONTEXT 0x10 // Client accepts remote text context updates
 #define ML_FF_PYROWAVE 0x20 // Client accepts the experimental PyroWave video contract
+#define ML_FF_DS5_HAPTICS_STATE 0x40 // Client accepts absolute DS5 actuator controls (0x550D)
+#define ML_FF_HOST_SESSION_STATE 0x100 // Client accepts host session lock state updates (0x550E)
+#define ML_FF_ENDPOINT_AUTO_REFRESH 0x8000 // Client requests authenticated endpoint migration v1
+void LiSetEndpointAutoRefreshEnabled(bool enabled);
 
 // Clipboard control stream packet type and payload kinds used by the Sunshine
 // clipboard sync extension.
@@ -214,6 +222,7 @@ typedef struct _ML_VIDEO_STREAM_CONTEXT {
     RTP_VIDEO_QUEUE rtpQueue;
     ML_DEPACKETIZER_CONTEXT depacketizerContext;
     SOCKET rtpSocket;
+    LI_ENDPOINT_REFRESH endpointRefresh;
     SOCKET firstFrameSocket;
     PPLT_CRYPTO_CONTEXT decryptionCtx;
     PLT_THREAD udpPingThread;
@@ -246,6 +255,7 @@ typedef struct _ML_AUDIO_STREAM_CONTEXT {
         bool pingThreadStarted;
         bool receivedDataFromPeer;
         uint64_t firstReceiveTime;
+        LI_ENDPOINT_REFRESH endpointRefresh;
         // Embedded in ML_CONNECTION_CONTEXT and shared with application code.
         // Debug options must never change its layout across translation units.
         uint8_t opusHeaderByte;
@@ -358,7 +368,7 @@ int LiSendClipboardDataCtx(PML_CONTROL_STREAM_CONTEXT ctx,
                            const void* payload, int length);
 int LiSendStreamBitrateCtx(PML_CONTROL_STREAM_CONTEXT ctx, int bitrateKbps);
 int LiSendStreamFramerateCtx(PML_CONTROL_STREAM_CONTEXT ctx, float fps);
-int LiSendStreamResolutionCtx(PML_CONTROL_STREAM_CONTEXT ctx, int width, int height);
+int LiRequestResolutionChangeCtx(PML_CONTROL_STREAM_CONTEXT ctx, int width, int height);
 
 // Microphone stream context (multi-stream scaffolding)
 typedef struct _ML_MICROPHONE_STREAM_CONTEXT {
@@ -399,10 +409,18 @@ typedef struct _ML_INPUT_STREAM_CONTEXT {
         uint8_t currentPenButtonState;
         uint8_t currentTouchpadButtonState;
         PLT_MUTEX batchedInputMutex;
+        // Per controller and sensor (index 0 accel, 1 gyro): demand from the host,
+        // the sequence of accepted samples and the stop bookkeeping.
         struct {
-            float x, y, z;
-            bool dirty;
+            bool enabled;
+            bool mayBeMoving;
+            bool stopPending;
+            uint64_t sequence;
+            uint64_t discardThrough;
         } currentGamepadSensorState[16][2];
+        uint16_t pendingGyroStops;
+        int queuedMotionPackets;
+        atomic_bool motionStateReady;
         struct {
             int deltaX, deltaY;
             bool dirty;
@@ -555,9 +573,15 @@ typedef struct _ML_CONNECTION_CONTEXT {
     int NegotiatedAudioBitrate;
     ConnListenerRemoteTextContext RemoteTextContextCallback;
     ConnListenerDs5OutputExtension Ds5OutputExtensionCallback;
+    ConnListenerDs5HapticsState Ds5HapticsStateCallback;
+    ConnListenerHostSessionState HostSessionStateCallback;
+    // Live MAT profile confirmed by the RTSP handshake of this connection
+    LI_MAT_LIVE_PROFILE MatLiveProfile;
+    // Authenticated UDP endpoint refresh was negotiated for this connection
+    bool EndpointRefreshRequested;
     // Live streaming sockets for LiGetStreamSockets(), indexed by STREAM_SOCKET_SLOT_*
-    volatile SOCKET streamSocketRegistry[3];
-    volatile bool ConnectionInterrupted;
+    _Atomic(SOCKET) streamSocketRegistry[3];
+    atomic_bool ConnectionInterrupted;
     bool HighQualitySurroundSupported;
     bool HighQualitySurroundEnabled;
     OPUS_MULTISTREAM_CONFIGURATION NormalQualityOpusConfig;
@@ -700,6 +724,7 @@ static inline PML_CONNECTION_CONTEXT LiGetEffectiveConnectionContext(void) {
 #endif
 
 void LiRecordStreamSocketCtx(PML_CONNECTION_CONTEXT ctx, SOCKET s, int slot);
+void LiReplaceStreamSocketCtx(PML_CONNECTION_CONTEXT ctx, SOCKET previous, SOCKET replacement, int slot);
 void LiClearStreamSocketsCtx(PML_CONNECTION_CONTEXT ctx);
 void LiGetStreamSocketsCtx(PML_CONNECTION_CONTEXT ctx, LI_STREAM_SOCKETS* sockets);
 bool isReferenceFrameInvalidationEnabledCtx(PML_CONNECTION_CONTEXT ctx);
@@ -722,6 +747,8 @@ PML_CONNECTION_CONTEXT LiGetGlobalConnectionContextPtr(void);
 uint32_t LiGetHostFeatureFlagsCtx(PML_CONNECTION_CONTEXT ctx);
 void LiSetRemoteTextContextCallbackCtx(PML_CONNECTION_CONTEXT ctx, ConnListenerRemoteTextContext callback);
 void LiSetDs5OutputExtensionCallbackCtx(PML_CONNECTION_CONTEXT ctx, ConnListenerDs5OutputExtension callback);
+void LiSetDs5HapticsStateCallbackCtx(PML_CONNECTION_CONTEXT ctx, ConnListenerDs5HapticsState callback);
+void LiSetHostSessionStateCallbackCtx(PML_CONNECTION_CONTEXT ctx, ConnListenerHostSessionState callback);
 int LiSendDs5InputStatusCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint16_t controllerNumber, uint32_t validMask,
                             uint8_t headsetPresent, uint8_t microphonePresent, uint8_t microphoneMuted);
 uint32_t LiGetHostDs5ExtensionsCtx(PML_CONNECTION_CONTEXT ctx);
@@ -749,6 +776,9 @@ int LiSendControllerTouchEvent2Ctx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t control
 int LiSendTouchpadEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t eventType, uint32_t pointerId, float x, float y, float pressure, float contactAreaMajor, float contactAreaMinor, uint16_t rotation, uint16_t deviceWidthMm, uint16_t deviceHeightMm, uint8_t buttonState);
 int LiSendTouchpadFrameEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t contactCount, const uint8_t* eventTypes, const uint32_t* pointerIds, const float* x, const float* y, const float* pressure, uint16_t rotation, uint16_t deviceWidthMm, uint16_t deviceHeightMm, uint8_t buttonState);
 int LiSendControllerMotionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t motionType, float x, float y, float z);
+int LiSendControllerMotionFrameCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controller, float gx, float gy, float gz, float ax, float ay, float az);
+int LiStopControllerMotionEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controller);
+int LiResetControllerMotionEventsCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controller, bool clearDemand);
 int LiSendControllerBatteryEventCtx(PML_INPUT_STREAM_CONTEXT ctx, uint8_t controllerNumber, uint8_t batteryState, uint8_t batteryPercentage);
 
 void LiRequestIdrFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx);
@@ -769,6 +799,9 @@ int initializeInputStream(void);
 void destroyInputStream(void);
 int startInputStream(void);
 int stopInputStream(void);
+// Only the control stream updates remote demand, before dispatching platform callbacks.
+int setControllerMotionEnabled(uint16_t controller, uint8_t type, bool enabled);
+int setControllerMotionEnabledCtx(PML_INPUT_STREAM_CONTEXT ctx, uint16_t controller, uint8_t type, bool enabled);
 
 // 麦克风流函数声明
 int initializeMicrophoneStream(void);

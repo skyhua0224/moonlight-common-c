@@ -320,6 +320,20 @@ typedef struct _DECODE_UNIT {
 // delay, no AVR decoder); biggest bandwidth (~1.5 Mbps stereo, ~4.6 Mbps 5.1).
 // LAN-only in practice.
 #define AUDIO_CODEC_PCM_S16 3
+// Values 4 and 5 are retired finite diagnostic profiles; they are rejected.
+#define AUDIO_CODEC_MAT_AUTO 6 // Local preference: select codec 7 or 0 before ANNOUNCE; never a wire codec.
+#define AUDIO_CODEC_MAT_LIVE 7
+#define AUDIO_CODEC_IS_MAT(c) ((c)==AUDIO_CODEC_MAT_LIVE)
+
+/* Registered from audio init, cleared after audio threads join. Return 0 to fail
+ * the loss-intolerant live session. End is authenticated EOS; consumers complete
+ * any bounded drain before returning success. No PCM/encoded callback. */
+typedef struct {
+    int (*cycle)(void*, const unsigned char*, int, uint64_t, uint64_t, uint64_t, uint64_t);
+    int (*end)(void*, uint64_t);
+    void* context;
+} LI_MAT_PLAYBACK_CALLBACKS;
+void LiSetMatPlaybackCallbacks(const LI_MAT_PLAYBACK_CALLBACKS* callbacks);
 
 // Bitmasks for STREAM_CONFIGURATION.supportedAudioCodecs (and reserved for a
 // future server-side capability advertisement). The set bit indicates that the
@@ -579,6 +593,10 @@ typedef void (*ConnListenerConnectionTerminated)(int errorCode);
 // desktop resolution and streaming resolution with HDR enabled. This value is
 // supported on GFE 3.22+.
 #define ML_ERROR_FRAME_CONVERSION -104
+// A negotiated control-only session lost its transport without a termination message.
+#define ML_ERROR_CONTROL_TRANSPORT_TIMEOUT -105
+// Authenticated endpoint recovery exhausted its bounded socket replacement attempts.
+#define ML_ERROR_ENDPOINT_REFRESH_FAILED -106
 
 // This callback is invoked to log debug message
 typedef void (*ConnListenerLogMessage)(const char *format, ...);
@@ -750,6 +768,31 @@ typedef struct _LI_DS5_HAPTICS_IR_FRAME_V2 {
 } LI_DS5_HAPTICS_IR_FRAME_V2, *PLI_DS5_HAPTICS_IR_FRAME_V2;
 typedef void(*ConnListenerDs5HapticsIrV2)(const LI_DS5_HAPTICS_IR_FRAME_V2* frame);
 
+// Optional continuous/event enhancement of an unchanged v2 base frame.
+// The base retains its original fields, units and callback interpretation.
+// See docs/DS5-HAPTICS-IR.md. This callback borrows the complete frame on the
+// control receive thread; copy it before deferring work and do not block.
+#define LI_DS5_HAPTICS_IR_EXTENDED_MAX_EVENTS 8
+typedef struct _LI_DS5_HAPTICS_IR_CONTINUOUS_LANE {
+    float continuousLow;         // 50-180 Hz, linear full scale [0, 1].
+    float continuousHigh;        // 180-400 Hz, linear full scale [0, 1].
+} LI_DS5_HAPTICS_IR_CONTINUOUS_LANE, *PLI_DS5_HAPTICS_IR_CONTINUOUS_LANE;
+typedef struct _LI_DS5_HAPTICS_IR_EVENT {
+    uint32_t eventId;
+    uint64_t sourceTimeUs;
+    float leftStrength;
+    float rightStrength;
+} LI_DS5_HAPTICS_IR_EVENT, *PLI_DS5_HAPTICS_IR_EVENT;
+typedef struct _LI_DS5_HAPTICS_IR_EXTENDED_FRAME {
+    LI_DS5_HAPTICS_IR_FRAME_V2 base;
+    uint32_t epoch;
+    uint64_t windowEndUs;         // Enhancement state end; may follow the base hop.
+    uint8_t eventCount;
+    LI_DS5_HAPTICS_IR_CONTINUOUS_LANE lanes[2];
+    LI_DS5_HAPTICS_IR_EVENT events[LI_DS5_HAPTICS_IR_EXTENDED_MAX_EVENTS];
+} LI_DS5_HAPTICS_IR_EXTENDED_FRAME, *PLI_DS5_HAPTICS_IR_EXTENDED_FRAME;
+typedef void(*ConnListenerDs5HapticsIrExtended)(const LI_DS5_HAPTICS_IR_EXTENDED_FRAME* frame);
+
 // A host-side text focus observation correlated with input from this client.
 // Coordinates use the capture coordinate space described by captureWidth/Height.
 #define LI_TEXT_CONTEXT_FLAG_ACTIVE        0x0001
@@ -788,6 +831,9 @@ typedef struct _LI_REMOTE_TEXT_CONTEXT {
 } LI_REMOTE_TEXT_CONTEXT, *PLI_REMOTE_TEXT_CONTEXT;
 typedef void(*ConnListenerRemoteTextContext)(const LI_REMOTE_TEXT_CONTEXT* context);
 
+// Source API: rebuild callers and the library together when this struct grows.
+// Appending the optional enhancement callback follows the existing v2 integration model;
+// it preserves v2 member offsets and wire behavior, not a drop-in binary ABI.
 typedef struct _CONNECTION_LISTENER_CALLBACKS {
   ConnListenerStageStarting stageStarting;
   ConnListenerStageComplete stageComplete;
@@ -809,6 +855,9 @@ typedef struct _CONNECTION_LISTENER_CALLBACKS {
   ConnListenerResolutionChanged resolutionChanged;
   // Reserved for the local cursor channel, which is not enabled in this build.
   ConnListenerCursorUpdate cursorUpdate;
+  // Register both IR callbacks for enhancement preference with older-host v2 fallback.
+  // Appended after the ABI-sensitive members that already exist in this client.
+  ConnListenerDs5HapticsIrExtended ds5HapticsIrExtended;
 } CONNECTION_LISTENER_CALLBACKS, *PCONNECTION_LISTENER_CALLBACKS;
 
 // Use this function to zero the connection callbacks when allocated on the
@@ -855,6 +904,28 @@ typedef void(*ConnListenerDs5OutputExtension)(const LI_DS5_OUTPUT_EXTENSION* out
 // (x-ml-general.ds5Extensions). Call before LiStartConnection(). This function
 // is not thread-safe.
 void LiSetDs5OutputExtensionCallback(ConnListenerDs5OutputExtension callback);
+// Optional absolute actuator controls accompanying authored PCM. State is eight
+// bytes: mode0, mode2, known controls, right/left motor, power-save, reduction, LPF.
+// Called synchronously on the control receive thread. The state buffer is valid
+// only during this callback; copy all eight bytes before deferring processing.
+typedef void(*ConnListenerDs5HapticsState)(uint16_t controllerNumber, const uint8_t* state);
+
+// Register before LiStartConnection(), while no connection is running. This
+// function is not thread-safe. Pass NULL to unregister before the next connection.
+void LiSetDs5HapticsStateCallback(ConnListenerDs5HapticsState callback);
+
+// Host interactive session lock state (Sunshine protocol extension 0x550E).
+#define LI_HOST_SESSION_UNLOCKED 0
+#define LI_HOST_SESSION_LOCKED   1
+
+// Called synchronously on the control receive thread with LI_HOST_SESSION_*:
+// once after the stream starts and again on every change. Only hosts that
+// advertise LI_FF_HOST_SESSION_STATE send these updates.
+typedef void(*ConnListenerHostSessionState)(uint8_t state);
+
+// Register before LiStartConnection(), while no connection is running. This
+// function is not thread-safe. Pass NULL to unregister before the next connection.
+void LiSetHostSessionStateCallback(ConnListenerHostSessionState callback);
 
 // ServerCodecModeSupport values
 #define SCM_H264 0x00000001
@@ -1333,6 +1404,18 @@ int LiSendControllerTouchEvent2(uint8_t controllerNumber, uint8_t eventType, uin
 int LiSendControllerMotionEvent(uint8_t controllerNumber, uint8_t motionType,
                                 float x, float y, float z);
 
+// Atomically enqueue one source frame using the existing per-sensor wire format.
+// If both sensors are requested, either both vectors are queued or neither is.
+// Controller numbers outside 0..15 are rejected.
+// Rejection leaves queued motion unchanged. The platform owning this source must
+// explicitly request a stop if its final zero frame is rejected.
+int LiSendControllerMotionFrame(uint8_t controllerNumber, float gx, float gy, float gz, float ax, float ay, float az);
+// Immediately discard queued old gyro motion and send a reliable zero from the input thread.
+// A new accepted gyro supersedes an unsent stop. No allocation or timer is needed for a stop.
+int LiStopControllerMotionEvent(uint8_t controllerNumber);
+// Retire queued source data; preserve demand on replacement, clear it when the host slot is removed.
+int LiResetControllerMotionEvents(uint8_t controllerNumber, bool clearDemand);
+
 // This function allows clients to send controller battery state to a supported
 // host. If the host can adjust battery state on the emulated controller, it can
 // use this information to make the virtual controller match the physical
@@ -1568,6 +1651,9 @@ bool LiGetHdrMetadata(PSS_HDR_METADATA metadata);
 void LiRequestIdrFrame(void);
 
 // This function returns any extended feature flags supported by the host.
+// Existing fork assignments are frozen. New fork-only features allocate from
+// 0x8000 downward; 0x55F0-0x55FF is reserved for private opcodes. See
+// docs/protocol-extension-registry.md.
 #define LI_FF_PEN_TOUCH_EVENTS        0x01 // LiSendTouchEvent()/LiSendPenEvent() supported
 #define LI_FF_CONTROLLER_TOUCH_EVENTS 0x02 // LiSendControllerTouchEvent() supported
 #define LI_FF_CLIPBOARD_TEXT          0x04 // Clipboard text sync supported
@@ -1578,6 +1664,10 @@ void LiRequestIdrFrame(void);
 #define LI_FF_DS5_HAPTICS_PCM         0x80 // Host can stream authored DualSense stereo PCM
 #define LI_FF_REMOTE_TEXT_CONTEXT     0x200 // Host can send InputPane/UIA text context updates
 #define LI_FF_DYNAMIC_SDR_WHITE       0x100 // Host accepts runtime client SDR reference white updates
+#define LI_FF_HOST_SESSION_STATE      0x800 // Host can report its session lock state
+#define LI_FF_ENDPOINT_AUTO_REFRESH  0x8000 // Authenticated UDP endpoint migration v1
+// True only for a live session with explicit encrypted-RTSP confirmation.
+bool LiIsEndpointAutoRefreshEnabled(void);
 uint32_t LiGetHostFeatureFlags(void);
 
 // Update the client's SDR reference white (50-1000 nits inclusive) during an
@@ -1596,13 +1686,16 @@ int LiSendClientSdrWhiteNits(float nits);
 // applies the change without a reconnect. Support is not advertised through
 // LI_FF_* flags, so callers must only use these when they know the host
 // understands the message. Return values match LI_DYNAMIC_SDR_WHITE_*.
-// A resolution change reconfigures the host display and is confirmed through
-// ConnListenerResolutionChanged.
+// A resolution change is requested with LiRequestResolutionChange() below and
+// is confirmed through ConnListenerResolutionChanged.
 #define LI_STREAM_BITRATE_MAX_KBPS 800000
 #define LI_STREAM_RESOLUTION_MAX 16384
 int LiSendStreamBitrate(int bitrateKbps);
 int LiSendStreamFramerate(float fps);
-int LiSendStreamResolution(int width, int height);
+// Foundation Sunshine extension. Zero means sent, not applied; clients must
+// observe a frame at the requested dimensions and reconnect on timeout.
+// -1: invalid dimensions; -2: unsupported host; -3: disconnected; -4: send failed.
+int LiRequestResolutionChange(int width, int height);
 
 // Select whether Sunshine composites the cursor into the video frame or sends
 // cursor shape updates for local rendering. This is only supported when the

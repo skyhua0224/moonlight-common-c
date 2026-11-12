@@ -1,7 +1,9 @@
 #include "Limelight-internal.h"
 #include "ControlStreamPacket.h"
 #include "Ds5HapticsStream.h"
+#include "Ds5HapticsStateStream.h"
 #include "Ds5HapticsIrStream.h"
+#include "HostSessionStateStream.h"
 #include "RemoteTextContextStream.h"
 #include "Ds5ControlExtension.h"
 
@@ -145,6 +147,14 @@ static void dispatchDs5HapticsIrV2(const LI_DS5_HAPTICS_IR_FRAME_V2* frame,
     }
 }
 
+static void dispatchDs5HapticsIrExtended(const LI_DS5_HAPTICS_IR_EXTENDED_FRAME* frame,
+                                         void* context) {
+    ConnListenerDs5HapticsIrExtended callback = (ConnListenerDs5HapticsIrExtended)context;
+    if (callback != NULL) {
+        callback(frame);
+    }
+}
+
 static void processRemoteTextContext(PML_CONTROL_STREAM_CONTEXT ctx,
                                      const uint8_t* payload, int payloadLength) {
     LI_REMOTE_TEXT_CONTEXT context;
@@ -185,6 +195,15 @@ static void processDs5OutputExtension(PML_CONTROL_STREAM_CONTEXT ctx,
     output.audioRouting = decoded.audioRouting;
     output.lightbarBrightness = decoded.lightbarBrightness;
     callback(&output);
+}
+
+// In control-only mode, endpoint refresh is the only media-side signal that
+// can distinguish a transport timeout from a generic control failure.
+static int controlTransportError(PML_CONTROL_STREAM_CONTEXT ctx, int fallback) {
+    if (StreamConfig.controlOnly && LiIsEndpointAutoRefreshEnabled()) {
+        return ML_ERROR_CONTROL_TRANSPORT_TIMEOUT;
+    }
+    return fallback;
 }
 
 #define CONN_IMMEDIATE_POOR_LOSS_RATE 30
@@ -229,6 +248,7 @@ static void processDs5OutputExtension(PML_CONTROL_STREAM_CONTEXT ctx,
 
 #define CONTROL_STREAM_TIMEOUT_SEC 10
 #define CONTROL_STREAM_LINGER_TIMEOUT_SEC 2
+#define CONTROL_STREAM_GENERIC_ERROR (-1)
 
 static const short packetTypesGen3[] = {
     0x1407, // Start A (Gen3 uses IDR request here)
@@ -1302,10 +1322,7 @@ static bool sendMessageEnet(PML_CONTROL_STREAM_CONTEXT ctx, short ptype, int pay
     if (ctx->encryptedControlStream) {
         PNVCTL_ENCRYPTED_PACKET_HEADER encPacket;
         PNVCTL_ENET_PACKET_HEADER_V2 packet;
-        char tempBuffer[256];
-        char* plaintextBuffer;
-        size_t plaintextLength;
-        bool plaintextBufferAllocated = false;
+        size_t plaintextLen = sizeof(*packet) + (size_t)paylen;
         unsigned short encryptedLength = getEncryptedControlPacketLength(paylen);
 
         if (encryptedLength == 0) {
@@ -1313,23 +1330,10 @@ static bool sendMessageEnet(PML_CONTROL_STREAM_CONTEXT ctx, short ptype, int pay
         }
 
         enetPacket = enet_packet_create(NULL,
-                                        sizeof(*encPacket) + AES_GCM_TAG_LENGTH + sizeof(*packet) + (size_t)paylen,
+                                        sizeof(*encPacket) + AES_GCM_TAG_LENGTH + plaintextLen,
                                         flags);
         if (enetPacket == NULL) {
             return false;
-        }
-
-        plaintextLength = sizeof(*packet) + (size_t)paylen;
-        if (plaintextLength <= sizeof(tempBuffer)) {
-            plaintextBuffer = tempBuffer;
-        }
-        else {
-            plaintextBuffer = malloc(plaintextLength);
-            if (plaintextBuffer == NULL) {
-                enet_packet_destroy(enetPacket);
-                return false;
-            }
-            plaintextBufferAllocated = true;
         }
 
         // We (ab)use the enetMutex to protect currentEnetSequenceNumber and the cipherContext
@@ -1341,8 +1345,9 @@ static bool sendMessageEnet(PML_CONTROL_STREAM_CONTEXT ctx, short ptype, int pay
         encPacket->length = encryptedLength;
         encPacket->seq = ctx->currentEnetSequenceNumber++;
 
-        // Construct the plaintext data for encryption
-        packet = (PNVCTL_ENET_PACKET_HEADER_V2)plaintextBuffer;
+        // Construct the plaintext data in place, after the tag, and encrypt it
+        // over itself (no separate plaintext buffer)
+        packet = (PNVCTL_ENET_PACKET_HEADER_V2)(((unsigned char*)(encPacket + 1)) + AES_GCM_TAG_LENGTH);
         packet->type = ptype;
         packet->payloadLength = (unsigned short)paylen;
         memcpy(&packet[1], payload, (size_t)paylen);
@@ -1351,15 +1356,8 @@ static bool sendMessageEnet(PML_CONTROL_STREAM_CONTEXT ctx, short ptype, int pay
         if (!encryptControlMessage(ctx, encPacket, packet)) {
             Limelog("Failed to encrypt control stream message\n");
             enet_packet_destroy(enetPacket);
-            if (plaintextBufferAllocated) {
-                free(plaintextBuffer);
-            }
             PltUnlockMutex(&ctx->enetMutex);
             return false;
-        }
-
-        if (plaintextBufferAllocated) {
-            free(plaintextBuffer);
         }
 
         // enetMutex still locked here
@@ -1725,6 +1723,11 @@ static void queueAsyncCallback(PML_CONTROL_STREAM_CONTEXT ctx, PNVCTL_ENET_PACKE
         BbGet16(&bb, &queuedCb->data.setMotionEventState.reportRateHz);
         BbGet8(&bb, &queuedCb->data.setMotionEventState.motionType);
 
+        // Remote demand must not depend on a delayed or full platform callback queue.
+        setControllerMotionEnabledCtx(&ctx->connectionContext->inputContext,
+                                   queuedCb->data.setMotionEventState.controllerNumber,
+                                   queuedCb->data.setMotionEventState.motionType,
+                                   queuedCb->data.setMotionEventState.reportRateHz > 0);
         queuedCb->typeIndex = IDX_SET_MOTION_EVENT;
     }
     else if (ctlHdr->type == ctx->packetTypes[IDX_SET_RGB_LED]) {
@@ -2113,7 +2116,7 @@ static void controlReceiveThreadFunc(void* context) {
 
             err = LastSocketFail();
             Limelog("Control stream connection failed: %d\n", err);
-            ListenerCallbacks.connectionTerminated(err);
+            ListenerCallbacks.connectionTerminated(controlTransportError(ctx, err));
             return;
         }
 
@@ -2317,13 +2320,42 @@ static void controlReceiveThreadFunc(void* context) {
             else if (ctlHdr->type == ctx->packetTypes[IDX_CLIPBOARD]) {
                 handleClipboardPacket(ctx, ctlHdr, packetLength);
             }
+            else if (ctlHdr->type == 0x550D) {
+                // Absolute DualSense actuator controls (Sunshine protocol extension)
+                uint16_t controller;
+                const uint8_t* state;
+                if (ctx->connectionContext->Ds5HapticsStateCallback != NULL && parseDs5HapticsState(
+                        (const uint8_t*)(ctlHdr + 1), packetLength - (int)sizeof(*ctlHdr),
+                        &controller, &state)) {
+                    ctx->connectionContext->Ds5HapticsStateCallback(controller, state);
+                }
+            }
+            else if (ctlHdr->type == 0x550E) {
+                // Host interactive session lock state (Sunshine protocol extension)
+                uint8_t sessionState;
+                if (ctx->connectionContext->HostSessionStateCallback != NULL && parseHostSessionState(
+                        (const uint8_t*)(ctlHdr + 1), packetLength - (int)sizeof(*ctlHdr),
+                        &sessionState)) {
+                    ctx->connectionContext->HostSessionStateCallback(sessionState);
+                }
+            }
             else if (ctlHdr->type == ctx->packetTypes[IDX_DS5_HAPTICS_IR_V2]) {
                 if (ListenerCallbacks.ds5HapticsIrV2 != NULL &&
                     packetLength > (int)sizeof(*ctlHdr)) {
-                    processDs5HapticsIrStreamPacket((const uint8_t *)(ctlHdr + 1),
-                                                    packetLength - (int)sizeof(*ctlHdr),
-                                                    dispatchDs5HapticsIrV2,
-                                                    (void *)ListenerCallbacks.ds5HapticsIrV2);
+                    // A fixed-size frame is plain IR v2; anything else is the
+                    // continuous-state/source-event enhancement.
+                    const uint8_t* irPayload = (const uint8_t *)(ctlHdr + 1);
+                    const int irLength = packetLength - (int)sizeof(*ctlHdr);
+                    if (irLength == DS5_HAPTICS_IR_STREAM_WIRE_SIZE) {
+                        processDs5HapticsIrStreamPacket(irPayload, irLength,
+                                                        dispatchDs5HapticsIrV2,
+                                                        (void *)ListenerCallbacks.ds5HapticsIrV2);
+                    }
+                    else if (ListenerCallbacks.ds5HapticsIrExtended != NULL) {
+                        processDs5HapticsIrExtendedStreamPacket(irPayload, irLength,
+                                                                dispatchDs5HapticsIrExtended,
+                                                                (void *)ListenerCallbacks.ds5HapticsIrExtended);
+                    }
                 }
             }
             else if (ctlHdr->type == ctx->packetTypes[IDX_DS5_OUTPUT_EXTENSION]) {
@@ -2353,7 +2385,7 @@ static void controlReceiveThreadFunc(void* context) {
         }
         else if (event.type == ENET_EVENT_TYPE_DISCONNECT) {
             Limelog("Control stream received unexpected disconnect event\n");
-            ListenerCallbacks.connectionTerminated(-1);
+            ListenerCallbacks.connectionTerminated(controlTransportError(ctx, CONTROL_STREAM_GENERIC_ERROR));
             return;
         }
     }
@@ -2368,7 +2400,7 @@ static void lossStatsThreadFunc(void* context) {
         char periodicPingPayload[8];
 
         BbInitializeWrappedBuffer(&byteBuffer, periodicPingPayload, 0, sizeof(periodicPingPayload), BYTE_ORDER_LITTLE);
-        BbPut16(&byteBuffer, 4); // Length of payload
+        BbPut32(&byteBuffer, 4); // Length of payload
         BbPut32(&byteBuffer, 0); // Timestamp?
 
         while (!PltIsThreadInterrupted(&ctx->lossStatsThread)) {
@@ -2435,7 +2467,7 @@ static void lossStatsThreadFunc(void* context) {
                                       ENET_PACKET_FLAG_RELIABLE,
                                       false)) {
                 Limelog("Loss Stats: Transaction failed: %d\n", (int)LastSocketError());
-                ListenerCallbacks.connectionTerminated(LastSocketFail());
+                ListenerCallbacks.connectionTerminated(controlTransportError(ctx, LastSocketFail()));
                 return;
             }
 
@@ -3089,22 +3121,30 @@ int LiSendStreamFramerateCtx(PML_CONTROL_STREAM_CONTEXT ctx, float fps) {
     return sendDynamicParamPayload(ctx, words, 2);
 }
 
-int LiSendStreamResolutionCtx(PML_CONTROL_STREAM_CONTEXT ctx, int width, int height) {
+// Foundation Sunshine live resolution request (qiin/mic #48). Zero means sent,
+// not applied. -1 invalid dimensions, -2 unsupported host, -3 disconnected,
+// -4 send failed.
+int LiRequestResolutionChangeCtx(PML_CONTROL_STREAM_CONTEXT ctx, int width, int height) {
     uint32_t words[3];
-    int err;
 
-    if (width <= 0 || height <= 0 || width > LI_STREAM_RESOLUTION_MAX || height > LI_STREAM_RESOLUTION_MAX) {
-        return LI_DYNAMIC_SDR_WHITE_ERR_INVALID;
+    if (width <= 0 || height <= 0 || width > LI_STREAM_RESOLUTION_MAX || height > LI_STREAM_RESOLUTION_MAX ||
+            (width & 1) || (height & 1)) {
+        return -1;
     }
-    err = checkDynamicParamSendable(ctx);
-    if (err != LI_DYNAMIC_SDR_WHITE_OK) {
-        return err;
+    if (ctx == NULL || ctx->connectionContext == NULL || ctx->packetTypes == NULL ||
+            !IS_SUNSHINE_CTX(ctx->connectionContext) || !ctx->encryptedControlStream ||
+            ControlStreamAppVersionQuad[0] < 5 ||
+            ctx->packetTypes[IDX_DYNAMIC_PARAM_CHANGE] == -1) {
+        return -2;
+    }
+    if (ctx->stopping || ctx->peer == NULL || ctx->peer->state != ENET_PEER_STATE_CONNECTED) {
+        return -3;
     }
 
     words[0] = SS_DYNAMIC_PARAM_TYPE_RESOLUTION;
     words[1] = (uint32_t)width;
     words[2] = (uint32_t)height;
-    return sendDynamicParamPayload(ctx, words, 3);
+    return sendDynamicParamPayload(ctx, words, 3) == LI_DYNAMIC_SDR_WHITE_OK ? 0 : -4;
 }
 
 int LiSendStreamBitrate(int bitrateKbps) {
@@ -3115,8 +3155,8 @@ int LiSendStreamFramerate(float fps) {
     return LiSendStreamFramerateCtx(LiGetEffectiveControlContext(), fps);
 }
 
-int LiSendStreamResolution(int width, int height) {
-    return LiSendStreamResolutionCtx(LiGetEffectiveControlContext(), width, height);
+int LiRequestResolutionChange(int width, int height) {
+    return LiRequestResolutionChangeCtx(LiGetEffectiveControlContext(), width, height);
 }
 
 // The local cursor channel (0x5509) is not enabled in this client. The packet

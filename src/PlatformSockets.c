@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include <stdatomic.h>
 
 #define TEST_PORT_TIMEOUT_SEC 3
 

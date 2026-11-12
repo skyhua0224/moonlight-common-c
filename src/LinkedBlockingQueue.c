@@ -83,10 +83,15 @@ int LbqGetItemCount(PLINKED_BLOCKING_QUEUE queueHead) {
 }
 
 int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOCKING_QUEUE_ENTRY entry) {
-    bool wasEmpty;
-    
     entry->flink = NULL;
     entry->data = data;
+    return LbqOfferQueueItems(queueHead, entry, entry, 1);
+}
+
+int LbqOfferQueueItems(PLINKED_BLOCKING_QUEUE queueHead, PLINKED_BLOCKING_QUEUE_ENTRY first,
+                       PLINKED_BLOCKING_QUEUE_ENTRY last, int count) {
+    bool wasEmpty;
+    LC_ASSERT(count > 0);
 
     PltLockMutex(&queueHead->mutex);
 
@@ -95,7 +100,7 @@ int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOC
         return LBQ_INTERRUPTED;
     }
 
-    if (queueHead->currentSize == queueHead->sizeBound) {
+    if (count > queueHead->sizeBound - queueHead->currentSize) {
         PltUnlockMutex(&queueHead->mutex);
         return LBQ_BOUND_EXCEEDED;
     }
@@ -104,20 +109,20 @@ int LbqOfferQueueItem(PLINKED_BLOCKING_QUEUE queueHead, void* data, PLINKED_BLOC
     if (wasEmpty) {
         LC_ASSERT(queueHead->currentSize == 0);
         LC_ASSERT(queueHead->tail == NULL);
-        queueHead->head = entry;
-        queueHead->tail = entry;
-        entry->blink = NULL;
+        queueHead->head = first;
+        first->blink = NULL;
     }
     else {
         LC_ASSERT(queueHead->currentSize >= 1);
         LC_ASSERT(queueHead->head != NULL);
-        queueHead->tail->flink = entry;
-        entry->blink = queueHead->tail;
-        queueHead->tail = entry;
+        queueHead->tail->flink = first;
+        first->blink = queueHead->tail;
     }
 
-    queueHead->currentSize++;
-    queueHead->lifetimeSize++;
+    queueHead->tail = last;
+    last->flink = NULL;
+    queueHead->currentSize += count;
+    queueHead->lifetimeSize += count;
 
     PltUnlockMutex(&queueHead->mutex);
 

@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include "EndpointRefresh.h"
 
 #ifdef StreamConfig
 #undef StreamConfig
@@ -82,6 +83,7 @@ void initializeVideoStream(void) {
 
 // Clean up the video stream (context)
 void destroyVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx) {
+    LiErClientDestroy(&ctx->endpointRefresh);
     PltDestroyCryptoContext(ctx->decryptionCtx);
     destroyVideoDepacketizerCtx(&ctx->depacketizerContext);
     RtpvCleanupQueue(&ctx->rtpQueue);
@@ -112,7 +114,10 @@ static void VideoPingThreadProc(void* context) {
     // to sending a packet prior to the host PC binding to that port.
     int pingCount = 0;
     while (!PltIsThreadInterrupted(&ctx->udpPingThread)) {
-        if (VideoPingPayload.payload[0] != 0) {
+        if (LiErClientPing(&ctx->endpointRefresh)) {
+            // Authenticated keepalive, including candidate-socket probes.
+        }
+        else if (VideoPingPayload.payload[0] != 0) {
             pingCount++;
             VideoPingPayload.sequenceNumber = BE32(pingCount);
 
@@ -181,11 +186,18 @@ static void VideoReceiveThreadProc(void* context) {
             }
         }
 
-        err = recvUdpSocket(ctx->rtpSocket,
+        err = LiErClientRecv(&ctx->endpointRefresh, &ctx->rtpSocket,
                             encrypted ? encryptedBuffer : buffer,
                             receiveSize,
                             useSelect);
-        if (err < 0) {
+        if (err == LI_ER_RECV_HANDLED) {
+            continue;
+        }
+        else if (err == LI_ER_RECV_FAILED) {
+            ListenerCallbacks.connectionTerminated(ML_ERROR_ENDPOINT_REFRESH_FAILED);
+            break;
+        }
+        else if (err < 0) {
             Limelog("Video Receive: recvUdpSocket() failed: %d\n", (int)LastSocketError());
             ListenerCallbacks.connectionTerminated(LastSocketFail());
             break;
@@ -285,6 +297,7 @@ static void VideoReceiveThreadProc(void* context) {
         queueStatus = RtpvAddPacket(&ctx->rtpQueue, packet, err, (PRTPV_QUEUE_ENTRY)&buffer[decryptedSize]);
 
         if (queueStatus == RTPF_RET_QUEUED) {
+            LiErClientMedia(&ctx->endpointRefresh);
             // The queue owns the buffer
             buffer = NULL;
         }
@@ -431,6 +444,13 @@ int startVideoStreamCtx(PML_VIDEO_STREAM_CONTEXT ctx, void* rendererContext, int
         return LastSocketError();
     }
     LiRecordStreamSocketCtx(ctx->connectionContext, ctx->rtpSocket, STREAM_SOCKET_SLOT_VIDEO);
+    if (!LiErClientInitialize(&ctx->endpointRefresh, ctx->rtpSocket, LI_ER_VIDEO, VideoPingPayload.payload,
+            VideoPortNumber, SOCK_QOS_TYPE_VIDEO, recvBufferBytes)) {
+        closeSocket(ctx->rtpSocket);
+        ctx->rtpSocket = INVALID_SOCKET;
+        VideoCallbacks.cleanup();
+        return -1;
+    }
 
     VideoCallbacks.start();
 

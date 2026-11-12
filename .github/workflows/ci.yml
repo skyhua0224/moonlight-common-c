@@ -5,11 +5,13 @@ on:
   pull_request:
     branches:
       - master
+      - mic
     types:
       - opened
       - synchronize
       - reopened
   push:
+  workflow_dispatch:
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -77,3 +79,10 @@ jobs:
           mkdir build_release
           cmake ${{ matrix.cmake_args }} -DCMAKE_BUILD_TYPE=Release -B build_release -S .
           cmake --build build_release --config Release
+
+      - name: Test Windows static client
+        if: startsWith(matrix.os, 'windows')
+        run: |
+          cmake ${{ matrix.cmake_args }} -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=ON -B build_static -S .
+          cmake --build build_static --config Release
+          ctest --test-dir build_static -C Release --output-on-failure

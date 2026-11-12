@@ -41,10 +41,11 @@ H.264、HEVC 和 AV1 的传输路径不使用本封套。
 低位传递，不改变用户的全局范围偏好。能力交集不包含所需位时拒绝 PyroWave 协商。
 `PARTIAL_FRAME` 位不是当前必需能力，不代表当前客户端会提交不完整帧。
 
-动态 HDR 会话另外要求 `DYNAMIC_HDR_MAPPING`（bit 10）。动态类型继续通过现有
-`x-ss-video[0].dynamicHdrCaps` / `dynamicHdrPreference` 请求，并通过
+动态 HDR 会话另外要求 `DYNAMIC_HDR_MAPPING`（bit 10；名称沿用现有协议字段）。动态类型继续
+通过现有 `x-ss-video[0].dynamicHdrCaps` / `dynamicHdrPreference` 请求，并通过
 `X-SS-Dynamic-HDR` 确认：1=HDR10+、2=Vivid PQ、3=Vivid HLG、4=DV 8.1、5=DV 8.4。
-该能力表示应用内逐帧消费，不表示厂商原生动态 HDR 输出；未请求动态 HDR 的会话不要求此位。
+该能力表示客户端能够逐帧消费受保护动态 metadata；Vivid 可使用原生 Vulkan 提交，
+HDR10+ 与 Dolby Vision 由客户端应用映射到协商的 PQ/HLG 基础信号。未请求动态 HDR 的会话不要求此位。
 PQ 类型必须使用 `dynamicRangeMode=1`，HLG 类型必须使用 `dynamicRangeMode=2`。
 
 能力位的必需集合根据当前 mode、capability 和 preference 共同计算。静态 HDR10 偏好不要求
@@ -190,8 +191,9 @@ RUNTIME；OPTIONAL/REQUIRED 保留在各条目，不能把整个区都标成 REQ
 bufferList；两者由同一分配拥有，直到 `LiCompleteVideoFrame()` 才失效。传统 codec
 的新增字段为 NULL/0。
 
-线格式允许完整 payload，但应用消费者只广告其确实实现的生成子集。Sunshine 桌面源使用
-HDR10+ 单窗口统计、Vivid 四个统计字段和 DV identity mapping 的 CM2.9 L1/L5/L6。
+线格式允许完整 payload，但客户端只广告其确实实现的消费子集。Sunshine 桌面源在传统
+HDR 编码路径使用 HDR10+ 单窗口统计、Vivid 四个统计字段和 DV identity mapping 的 CM2.9 L1/L5/L6；
+这些字段由 PyroWave 客户端按协商类型执行受限应用侧曲线映射或原生 Vivid 提交。
 这不等于任意电影动态 metadata、Dolby Profile 5/7 或增强层支持。
 
 common-c 校验 TLV 边界、必需标记、动态类型与基础信号的一致性，以及以下最小载荷外壳：
@@ -261,7 +263,8 @@ SDR 使用 BT.709，HDR10/PQ 与 HLG 使用 BT.2020，均支持协商的 limited
 
 RGB primaries、white point、显示亮度、MaxCLL、MaxFALL 和 full-frame luminance 使用
 现有 `SS_HDR_METADATA` 控制消息，由客户端呈现层处理。不通过新增 TLV 复制另一份合同。
-动态 TLV 的消费与静态快照分开：应用内映射输出 PQ/HLG，并明确报告 application-mapped；
+动态 TLV 的消费与静态快照分开：PyroWave 在有效静态快照和对应格式合同同时满足时，
+对 HDR10+ 与 Dolby Vision 使用应用映射，对 Vivid 使用原生 Vulkan 能力；不满足时拒绝该动态格式并重新协商。
 携带 RPU 不使 PyroWave 成为标准 Dolby Vision HEVC 码流，也不证明设备进入原生 Dolby 模式。
 音频、麦克风、输入、手柄、USB 和剪贴板协议不由本视频封套修改。
 
@@ -296,7 +299,9 @@ data before separating metadata, codec bytes, and zero padding. Frame headers ar
 data/parity shards. Dynamic HDR TLVs remain bound to their decoded frame and require the negotiated
 DYNAMIC_HDR_MAPPING capability. Full metadata is recovered from protected DATA/PARITY, not from a
 possibly partial frame-header copy. Native color metadata and SS_HDR_METADATA remain separate.
-Application mapping to PQ/HLG is not native Dolby Vision output. Legacy codecs and other channels are unchanged.
+PyroWave applies bounded HDR10+/Dolby Vision mapping into the negotiated PQ/HLG base signal.
+Native Vivid metadata is forwarded only when the negotiated Vulkan Vivid feature is available.
+Legacy codecs and other channels are unchanged.
 
 The depacketizer also checks each dynamic payload's minimum header/body length and registered
 T.35 or RPU identifier. Full syntax, supported profiles, and checksums remain the presentation

@@ -63,6 +63,18 @@ void LiSetDs5PadAudioOffer(int mode) {
 #ifdef Ds5OutputExtensionCallback
 #undef Ds5OutputExtensionCallback
 #endif
+#ifdef Ds5HapticsStateCallback
+#undef Ds5HapticsStateCallback
+#endif
+#ifdef HostSessionStateCallback
+#undef HostSessionStateCallback
+#endif
+#ifdef MatLiveProfile
+#undef MatLiveProfile
+#endif
+#ifdef EndpointRefreshRequested
+#undef EndpointRefreshRequested
+#endif
 #ifdef NegotiatedAudioCodec
 #undef NegotiatedAudioCodec
 #endif
@@ -89,6 +101,10 @@ void LiSetDs5PadAudioOffer(int mode) {
 #define ListenerCallbacks (ctx->ListenerCallbacks)
 #define RemoteTextContextCallback (ctx->RemoteTextContextCallback)
 #define Ds5OutputExtensionCallback (ctx->Ds5OutputExtensionCallback)
+#define Ds5HapticsStateCallback (ctx->Ds5HapticsStateCallback)
+#define HostSessionStateCallback (ctx->HostSessionStateCallback)
+#define MatLiveProfile (ctx->MatLiveProfile)
+#define EndpointRefreshRequested (ctx->EndpointRefreshRequested)
 #define NegotiatedAudioCodec (ctx->NegotiatedAudioCodec)
 #define NegotiatedAudioBitrate (ctx->NegotiatedAudioBitrate)
 #define VideoFecControlSupported (ctx->controlContext.videoFecControlSupported)
@@ -367,16 +383,30 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         // Send client feature flags to Sunshine hosts
         uint32_t moonlightFeatureFlags = ML_FF_FEC_STATUS |
                                          ML_FF_SESSION_ID_V1;
+        if (EndpointRefreshRequested) {
+            moonlightFeatureFlags |= ML_FF_ENDPOINT_AUTO_REFRESH;
+            err |= addAttributeString(&optionHead, "x-ml-general.endpointAutoRefreshVersion", "1");
+        }
         // With "pad-speaker" the PCM callback only receives the speaker pair: the PCM feature flag stays off, so that a host without the
         // token keeps sending the IR frames (a host that sees both flags takes the raw PCM route and sends no IR).
         if (ListenerCallbacks.ds5HapticsPcm != NULL && Ds5PadAudioOfferMode != 2) {
             moonlightFeatureFlags |= ML_FF_DS5_HAPTICS_PCM;
+            if (Ds5HapticsStateCallback != NULL) {
+                moonlightFeatureFlags |= ML_FF_DS5_HAPTICS_STATE;
+            }
         }
         if (ListenerCallbacks.ds5HapticsIrV2 != NULL) {
             moonlightFeatureFlags |= ML_FF_DS5_HAPTICS_IR_V2;
         }
+        if (ListenerCallbacks.ds5HapticsIrV2 != NULL && ListenerCallbacks.ds5HapticsIrExtended != NULL) {
+            // Enhancement is optional and requires the existing v2 base capability.
+            moonlightFeatureFlags |= ML_FF_DS5_HAPTICS_IR_EXTENDED;
+        }
         if (RemoteTextContextCallback != NULL) {
             moonlightFeatureFlags |= ML_FF_REMOTE_TEXT_CONTEXT;
+        }
+        if (HostSessionStateCallback != NULL) {
+            moonlightFeatureFlags |= ML_FF_HOST_SESSION_STATE;
         }
         // ML_FF_PYROWAVE and the x-ml-pyrowave.* attributes are intentionally
         // never advertised: PyroWave is not enabled in this client.
@@ -652,8 +682,19 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         if (NegotiatedAudioCodec != AUDIO_CODEC_OPUS) {
             const char* codecStr = (NegotiatedAudioCodec == AUDIO_CODEC_AC3) ? "ac3" :
                                    (NegotiatedAudioCodec == AUDIO_CODEC_EAC3) ? "eac3" :
-                                   (NegotiatedAudioCodec == AUDIO_CODEC_PCM_S16) ? "pcm" : "opus";
+                                   (NegotiatedAudioCodec == AUDIO_CODEC_PCM_S16) ? "pcm" :
+                                   (NegotiatedAudioCodec == AUDIO_CODEC_MAT_LIVE) ? MAT_LIVE_NAME : "opus";
             err |= addAttributeString(&optionHead, "x-ml-audio.codec", codecStr);
+            if (AUDIO_CODEC_IS_MAT(NegotiatedAudioCodec)) {
+                err |= addAttributeString(&optionHead,"x-ml-audio.mat-live","1");
+                err |= addAttributeString(&optionHead,"x-ml-audio.mat-live-carrier",MAT_CARRIER);
+                err |= addAttributeString(&optionHead,"x-ml-audio.mat-live-clock",MAT_CLOCK);
+                err |= addAttributeString(&optionHead,"x-ml-audio.mat-live-crypto",MAT_LIVE_CRYPTO);
+                snprintf(payloadStr,sizeof(payloadStr),"%llu",(unsigned long long)MatLiveProfile.epoch);
+                err |= addAttributeString(&optionHead,"x-ml-audio.mat-live-epoch",payloadStr);
+                snprintf(payloadStr,sizeof(payloadStr),"%llu",(unsigned long long)MatLiveProfile.domain);
+                err |= addAttributeString(&optionHead,"x-ml-audio.mat-live-domain",payloadStr);
+            }
             if (NegotiatedAudioBitrate > 0) {
                 snprintf(payloadStr, sizeof(payloadStr), "%d", NegotiatedAudioBitrate);
                 err |= addAttributeString(&optionHead, "x-ml-audio.bitrate", payloadStr);
@@ -712,6 +753,9 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         }
         // PCM passthrough: keep frames as small as possible. 5 ms @ 48 kHz =
         // 240 samples, 5.1ch = 2880 B which fits the 4 KB receive buffer.
+        else if (AUDIO_CODEC_IS_MAT(NegotiatedAudioCodec)) {
+            AudioPacketDuration = 1; // FEC transport tick; carrier PTS is in SMAT.
+        }
         else if (NegotiatedAudioCodec == AUDIO_CODEC_PCM_S16) {
             AudioPacketDuration = 5;
         }

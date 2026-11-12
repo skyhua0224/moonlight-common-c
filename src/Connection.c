@@ -199,19 +199,25 @@ const char* LiGetStageName(int stage) {
     return stageNames[stage];
 }
 
-// Registry of live streaming sockets for LiGetStreamSockets(). Each slot is
-// written once by its stream thread before LiStartConnection() returns and
-// cleared by LiStopConnection(), so plain volatile accesses suffice.
+// Registry of live streaming sockets for LiGetStreamSockets(). Receivers can
+// replace a media socket (endpoint refresh) while diagnostics or teardown run,
+// so the slots are atomic.
 #define STREAM_SOCKET_SLOT_COUNT 3
 
 void LiRecordStreamSocketCtx(PML_CONNECTION_CONTEXT ctx, SOCKET s, int slot) {
     LC_ASSERT(slot >= 0 && slot < STREAM_SOCKET_SLOT_COUNT);
-    ctx->streamSocketRegistry[slot] = s;
+    atomic_store(&ctx->streamSocketRegistry[slot], s);
+}
+
+void LiReplaceStreamSocketCtx(PML_CONNECTION_CONTEXT ctx, SOCKET previous, SOCKET replacement, int slot) {
+    LC_ASSERT(slot >= 0 && slot < STREAM_SOCKET_SLOT_COUNT);
+    // Once teardown clears a slot, a concurrent migration must not republish it.
+    atomic_compare_exchange_strong(&ctx->streamSocketRegistry[slot], &previous, replacement);
 }
 
 void LiClearStreamSocketsCtx(PML_CONNECTION_CONTEXT ctx) {
     for (int i = 0; i < STREAM_SOCKET_SLOT_COUNT; i++) {
-        ctx->streamSocketRegistry[i] = INVALID_SOCKET;
+        atomic_store(&ctx->streamSocketRegistry[i], INVALID_SOCKET);
     }
 }
 
@@ -223,7 +229,7 @@ void LiGetStreamSocketsCtx(PML_CONNECTION_CONTEXT ctx, LI_STREAM_SOCKETS* socket
     const int slots[] = { STREAM_SOCKET_SLOT_VIDEO, STREAM_SOCKET_SLOT_AUDIO, STREAM_SOCKET_SLOT_CONTROL };
     LI_STREAM_SOCKET* out[] = { &sockets->videoRtp, &sockets->audioRtp, &sockets->control };
     for (int i = 0; i < (int)(sizeof(slots) / sizeof(slots[0])); i++) {
-        SOCKET s = ctx->streamSocketRegistry[slots[i]];
+        SOCKET s = atomic_load(&ctx->streamSocketRegistry[slots[i]]);
         if (s == INVALID_SOCKET) {
             continue;
         }
@@ -355,6 +361,9 @@ void LiStopConnectionCtx(PML_CONNECTION_CONTEXT ctx) {
         Limelog("done\n");
     }
     LC_ASSERT(connectionStage == STAGE_NONE);
+    // The endpoint refresh preference and negotiation never outlive a session.
+    LiSetEndpointAutoRefreshEnabled(false);
+    ctx->EndpointRefreshRequested = false;
 }
 
 void LiStopConnection(void) {
@@ -451,10 +460,19 @@ int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverI
         goto Cleanup;
     }
 
+    if (clCallbacks != NULL && clCallbacks->ds5HapticsIrExtended != NULL &&
+            clCallbacks->ds5HapticsIrV2 == NULL) {
+        Limelog("Authored IR enhancement requires the v2 base callback\n");
+        LC_ASSERT(false);
+        err = -1;
+        goto Cleanup;
+    }
+
     // Mode 2 keeps IR and a speaker-only PCM packet, with the PCM feature flag off.
     // Mode 1 is full PCM (PCM feature flag and pad-audio) and still accepts IR when the host does not grant PCM.
     // Mode 3 is actuator PCM without the pad speaker, and still accepts IR when the host does not grant PCM.
-    if (clCallbacks != NULL && clCallbacks->ds5HapticsPcm != NULL && clCallbacks->ds5HapticsIrV2 != NULL &&
+    if (clCallbacks != NULL && clCallbacks->ds5HapticsPcm != NULL &&
+            (clCallbacks->ds5HapticsIrV2 != NULL || clCallbacks->ds5HapticsIrExtended != NULL) &&
             Ds5PadAudioOfferMode != 2 && Ds5PadAudioOfferMode != 1 && Ds5PadAudioOfferMode != 3) {
         Limelog("Physical and simulated DualSense haptics modes are mutually exclusive\n");
         LC_ASSERT(false);
@@ -543,6 +561,7 @@ int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverI
     // LiGetNegotiatedAudioCodec() to check what was actually selected.
     NegotiatedAudioCodec = AUDIO_CODEC_OPUS;
     NegotiatedAudioBitrate = 0;
+    memset(&ctx->MatLiveProfile, 0, sizeof(ctx->MatLiveProfile));
     switch (StreamConfig.audioCodec) {
         case AUDIO_CODEC_OPUS:
             // Default; nothing to do.
@@ -567,6 +586,24 @@ int LiStartConnectionCtx(PML_CONNECTION_CONTEXT ctx, PSERVER_INFORMATION serverI
                     : (StreamConfig.audioCodec == AUDIO_CODEC_AC3 ? 640000 : 384000);
             }
             break;
+        case AUDIO_CODEC_MAT_AUTO:
+            if (!IS_SUNSHINE() || StreamConfig.controlOnly) {
+                Limelog("MAT preference unavailable for this session; selecting Opus\n");
+                break;
+            }
+            NegotiatedAudioCodec = AUDIO_CODEC_MAT_LIVE;
+            break;
+        case AUDIO_CODEC_MAT_LIVE:
+            if (!IS_SUNSHINE() || StreamConfig.controlOnly) {
+                Limelog("Live MAT requires a Sunshine audio session\n");
+                err = -1; goto Cleanup;
+            }
+            NegotiatedAudioCodec = AUDIO_CODEC_MAT_LIVE;
+            break;
+        case 4: // Retired finite diagnostic profiles; never silently reinterpret.
+        case 5:
+            Limelog("Finite MAT codecs are not supported; request live MAT or Opus\n");
+            err = -1; goto Cleanup;
         case AUDIO_CODEC_PCM_S16:
             if (!IS_SUNSHINE()) {
                 Limelog("PCM passthrough is only supported by Sunshine; falling back to Opus\n");
