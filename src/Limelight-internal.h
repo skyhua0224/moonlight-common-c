@@ -86,6 +86,7 @@ extern volatile int Ds5PadAudioOfferMode;  // SdpGenerator.c: 0 off, 1 pad-audio
 #define ML_FF_PYROWAVE 0x20 // Client accepts the experimental PyroWave video contract
 #define ML_FF_DS5_HAPTICS_STATE 0x40 // Client accepts absolute DS5 actuator controls (0x550D)
 #define ML_FF_HOST_SESSION_STATE 0x100 // Client accepts host session lock state updates (0x550E)
+#define ML_FF_BITRATE_CALLBACK 0x4000 // Client accepts host runtime bitrate updates (0x5506 subtype 2)
 #define ML_FF_ENDPOINT_AUTO_REFRESH 0x8000 // Client requests authenticated endpoint migration v1
 void LiSetEndpointAutoRefreshEnabled(bool enabled);
 

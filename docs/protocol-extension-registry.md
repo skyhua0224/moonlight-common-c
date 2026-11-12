@@ -38,6 +38,7 @@ next unused high bit before implementation and add it to this table.
 
 | Identifier | Value | Used for |
 | --- | ---: | --- |
+| `ML_FF_BITRATE_CALLBACK` | `0x4000` | Tells the host that the client accepts host-to-client runtime bitrate updates on opcode `0x5506` (subtype `2`, see below). Sent only with a host that advertises `LI_FF_BITRATE_CALLBACK`. |
 | `ML_FF_ENDPOINT_AUTO_REFRESH` | `0x8000` | Tells the host that the client supports authenticated UDP endpoint migration v1. Activation also requires encrypted RTSP and `x-ml-general.endpointAutoRefreshVersion:1`. |
 
 ## Host feature flags
@@ -73,6 +74,7 @@ next unused high bit before implementation and add it to this table.
 
 | Identifier | Value | Used for |
 | --- | ---: | --- |
+| `LI_FF_BITRATE_CALLBACK` | `0x4000` | Advertises host-to-client runtime bitrate updates on opcode `0x5506` (subtype `2`). The host sends them only to a client that set `ML_FF_BITRATE_CALLBACK`. |
 | `LI_FF_ENDPOINT_AUTO_REFRESH` | `0x8000` | Advertises authenticated UDP endpoint migration v1. The host enables it only after the client requests version 1 over encrypted RTSP. |
 
 ## Assigned control opcodes
@@ -97,6 +99,20 @@ The values are separate from both feature-flag namespaces.
 | `0x550C` | Remote text context updates. |
 | `0x550D` | Absolute DualSense actuator state updates. |
 | `0x550E` | Host interactive session lock-state notifications. |
+
+## Dynamic parameter subtypes (opcode `0x5506`)
+
+The first little-endian 32-bit word of a `0x5506` payload is the subtype. The
+values are separate from the feature-flag namespaces. Subtype ordinals are part
+of the wire protocol; never reuse or renumber one.
+
+| Subtype | Name | Payload after the subtype word | Direction |
+| ---: | --- | --- | --- |
+| `0` | Resolution | `width:u32`, `height:u32` | Client to host request (`LiRequestResolutionChange`); the host answers with `0x5507`. |
+| `1` | Frame rate | `fps:f32` | Client to host request. |
+| `2` | Bitrate | `kbps:i32` | Client to host request. Also host to client (8-byte payload: subtype and value) once `LI_FF_BITRATE_CALLBACK` and `ML_FF_BITRATE_CALLBACK` are both set; the client validates the 8-byte length and a range of 1 to 800000 kbps. |
+| `3`–`8` | Encoder tuning | Host-defined (QP, FEC percentage, preset, adaptive quantization, multi-pass, VBV buffer size) | Client to host request. |
+| `9` | Reserved legacy | none | Retired client SDR-white subtype; hosts ignore it. Never reuse. |
 
 ## Reserved private opcodes
 

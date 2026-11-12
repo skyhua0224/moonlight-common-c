@@ -1665,6 +1665,7 @@ void LiRequestIdrFrame(void);
 #define LI_FF_REMOTE_TEXT_CONTEXT     0x200 // Host can send InputPane/UIA text context updates
 #define LI_FF_DYNAMIC_SDR_WHITE       0x100 // Host accepts runtime client SDR reference white updates
 #define LI_FF_HOST_SESSION_STATE      0x800 // Host can report its session lock state
+#define LI_FF_BITRATE_CALLBACK       0x4000 // Host sends runtime bitrate updates (0x5506 subtype 2) to clients that opt in with ML_FF_BITRATE_CALLBACK
 #define LI_FF_ENDPOINT_AUTO_REFRESH  0x8000 // Authenticated UDP endpoint migration v1
 // True only for a live session with explicit encrypted-RTSP confirmation.
 bool LiIsEndpointAutoRefreshEnabled(void);
