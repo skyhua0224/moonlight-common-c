@@ -111,6 +111,14 @@ void LiSetDs5PadAudioOffer(int mode) {
 
 #define MAX_OPTION_NAME_LEN 128
 
+// A Sunshine host reads a fixed set of attributes out of the ANNOUNCE (rtsp.cpp cmd_announce: the ones it gives a default
+// with args.try_emplace, plus the x-ml-* and x-ss-* extensions) and ignores the rest. The rest are what GeForce
+// Experience's streamer wants: rate control mode, time-outs, initial and minimum bitrates, FEC and DRC switches and so on.
+// Sunshine reads its encrypted RTSP messages into a 2048-byte buffer and drops the connection when the 24-byte header plus
+// the payload does not fit, so every attribute the host does not read costs room the options it does read need.
+// Attributes that only GeForce Experience uses are therefore left out for a Sunshine host.
+#define GFE_ONLY_ATTRIBUTE() (!IS_SUNSHINE())
+
 #define MAX_SDP_HEADER_LEN 128
 #define MAX_SDP_TAIL_LEN 128
 
@@ -318,12 +326,14 @@ static int addGen5Options(PML_CONNECTION_CONTEXT ctx, PSDP_OPTION* head) {
         // 1 data shard frame).
         err |= addAttributeString(head, "x-nv-vqos[0].fec.minRequiredFecPackets", "2");
 
+        if (GFE_ONLY_ATTRIBUTE()) {
         // BLL-FEC appears to adjust dynamically based on the loss rate and instantaneous bitrate
         // of each frame, however we can't dynamically control it from our side yet. As a result,
         // the effective FEC amount is significantly lower (single digit percentages for many
         // large frames) and the result is worse performance during packet loss. Disabling BLL-FEC
         // results in GFE 3.26 falling back to the legacy FEC method as we would like.
         err |= addAttributeString(head, "x-nv-vqos[0].bllFec.enable", "0");
+        }
     }
     else {
         // We want to use the new ENet connections for control and input
@@ -343,7 +353,10 @@ static int addGen5Options(PML_CONNECTION_CONTEXT ctx, PSDP_OPTION* head) {
         }
     }
 
-    if (APP_VERSION_AT_LEAST(7, 1, 446) && (StreamConfig.width < 720 || StreamConfig.height < 540)) {
+    if (!GFE_ONLY_ATTRIBUTE()) {
+        // Sunshine reads neither the DRC switches nor the recovery mode.
+    }
+    else if (APP_VERSION_AT_LEAST(7, 1, 446) && (StreamConfig.width < 720 || StreamConfig.height < 540)) {
         // We enable DRC with a static DRC table for very low resoutions on GFE 3.26 to work around
         // a bug that causes nvstreamer.exe to crash due to failing to populate a list of valid resolutions.
         //
@@ -360,7 +373,9 @@ static int addGen5Options(PML_CONNECTION_CONTEXT ctx, PSDP_OPTION* head) {
 
     // Recovery mode can cause the FEC percentage to change mid-frame, which
     // breaks many assumptions in RTP FEC queue.
-    err |= addAttributeString(head, "x-nv-general.enableRecoveryMode", "0");
+    if (GFE_ONLY_ATTRIBUTE()) {
+        err |= addAttributeString(head, "x-nv-general.enableRecoveryMode", "0");
+    }
 
     return err;
 }
@@ -510,10 +525,12 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         err |= addAttributeString(&optionHead, "x-ml-video.fecSummaryVersion", "1");
     }
 
-    err |= addAttributeString(&optionHead, "x-nv-video[0].rateControlMode", "4");
+    if (GFE_ONLY_ATTRIBUTE()) {
+        err |= addAttributeString(&optionHead, "x-nv-video[0].rateControlMode", "4");
 
-    err |= addAttributeString(&optionHead, "x-nv-video[0].timeoutLengthMs", "7000");
-    err |= addAttributeString(&optionHead, "x-nv-video[0].framesWithInvalidRefThreshold", "0");
+        err |= addAttributeString(&optionHead, "x-nv-video[0].timeoutLengthMs", "7000");
+        err |= addAttributeString(&optionHead, "x-nv-video[0].framesWithInvalidRefThreshold", "0");
+    }
 
     // 20% of the video bitrate will added to the user-specified bitrate for FEC
     adjustedBitrate = (int)(StreamConfig.bitrate * 0.80);
@@ -541,10 +558,12 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
     if (AppVersionQuad[0] >= 5) {
         snprintf(payloadStr, sizeof(payloadStr), "%d", adjustedBitrate);
 
-        err |= addAttributeString(&optionHead, "x-nv-video[0].initialBitrateKbps", payloadStr);
-        err |= addAttributeString(&optionHead, "x-nv-video[0].initialPeakBitrateKbps", payloadStr);
+        if (GFE_ONLY_ATTRIBUTE()) {
+            err |= addAttributeString(&optionHead, "x-nv-video[0].initialBitrateKbps", payloadStr);
+            err |= addAttributeString(&optionHead, "x-nv-video[0].initialPeakBitrateKbps", payloadStr);
 
-        err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.minimumBitrateKbps", payloadStr);
+            err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.minimumBitrateKbps", payloadStr);
+        }
         err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.maximumBitrateKbps", payloadStr);
 
         // Send the configured bitrate to Sunshine hosts, so they can adjust for dynamic FEC percentage
@@ -564,10 +583,12 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         err |= addAttributeString(&optionHead, "x-nv-vqos[0].bw.maximumBitrate", payloadStr);
     }
 
-    // FEC must be enabled for proper packet sequencing to be done by RTP FEC queue
-    err |= addAttributeString(&optionHead, "x-nv-vqos[0].fec.enable", "1");
+    if (GFE_ONLY_ATTRIBUTE()) {
+        // FEC must be enabled for proper packet sequencing to be done by RTP FEC queue
+        err |= addAttributeString(&optionHead, "x-nv-vqos[0].fec.enable", "1");
 
-    err |= addAttributeString(&optionHead, "x-nv-vqos[0].videoQualityScoreUpdateTime", "5000");
+        err |= addAttributeString(&optionHead, "x-nv-vqos[0].videoQualityScoreUpdateTime", "5000");
+    }
 
     // If the remote host is local (RFC 1918), enable QoS tagging for our traffic. Windows qWave
     // will disable it if the host is off-link, *however* Windows may get it wrong in cases where
@@ -616,7 +637,9 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
             err |= addAttributeString(&optionHead, "x-nv-vqos[0].bitStreamFormat", "2");
         }
         else if (NegotiatedVideoFormat & VIDEO_FORMAT_MASK_H265) {
-            err |= addAttributeString(&optionHead, "x-nv-clientSupportHevc", "1");
+            if (GFE_ONLY_ATTRIBUTE()) {
+                err |= addAttributeString(&optionHead, "x-nv-clientSupportHevc", "1");
+            }
             err |= addAttributeString(&optionHead, "x-nv-vqos[0].bitStreamFormat", "1");
 
             if (!APP_VERSION_AT_LEAST(7, 1, 408)) {
@@ -628,7 +651,9 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
             }
         }
         else {
-            err |= addAttributeString(&optionHead, "x-nv-clientSupportHevc", "0");
+            if (GFE_ONLY_ATTRIBUTE()) {
+                err |= addAttributeString(&optionHead, "x-nv-clientSupportHevc", "0");
+            }
             err |= addAttributeString(&optionHead, "x-nv-vqos[0].bitStreamFormat", "0");
         }
 
@@ -670,11 +695,13 @@ static PSDP_OPTION getAttributesList(PML_CONNECTION_CONTEXT ctx, char*urlSafeAdd
         err |= addAttributeString(&optionHead, "x-nv-audio.surround.numChannels", payloadStr);
         snprintf(payloadStr, sizeof(payloadStr), "%d", audioChannelMask);
         err |= addAttributeString(&optionHead, "x-nv-audio.surround.channelMask", payloadStr);
-        if (audioChannelCount > 2) {
-            err |= addAttributeString(&optionHead, "x-nv-audio.surround.enable", "1");
-        }
-        else {
-            err |= addAttributeString(&optionHead, "x-nv-audio.surround.enable", "0");
+        if (GFE_ONLY_ATTRIBUTE()) {
+            if (audioChannelCount > 2) {
+                err |= addAttributeString(&optionHead, "x-nv-audio.surround.enable", "1");
+            }
+            else {
+                err |= addAttributeString(&optionHead, "x-nv-audio.surround.enable", "0");
+            }
         }
 
         // Sunshine-only: request a non-Opus surround codec for HDMI/SPDIF

@@ -149,6 +149,12 @@ if (BUILD_TESTING)
   target_compile_definitions(rtsp-parser-mat-tests PRIVATE HAS_SOCKLEN_T)
   add_test(NAME rtsp-parser-mat-tests COMMAND rtsp-parser-mat-tests)
 
+  # The generated ANNOUNCE with every option on must fit the 2048-byte buffer a Sunshine host reads RTSP into.
+  add_executable(rtsp-announce-size-tests tests/RtspAnnounceSizeTest.c src/RtspParser.c)
+  target_include_directories(rtsp-announce-size-tests PRIVATE src enet/include)
+  target_compile_definitions(rtsp-announce-size-tests PRIVATE HAS_SOCKLEN_T)
+  add_test(NAME rtsp-announce-size-tests COMMAND rtsp-announce-size-tests)
+
   get_target_property(_common_c_type moonlight-common-c TYPE)
   if(_common_c_type STREQUAL "STATIC_LIBRARY")
     add_executable(mat-live-rtp-tests tests/MatLiveRtpTest.c)

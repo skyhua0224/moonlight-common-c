@@ -1,4 +1,5 @@
 #include "Limelight-internal.h"
+#include <errno.h>
 #include "DynamicHdr.h"
 #include "Ds5ControlExtension.h"
 #include "Rtsp.h"
@@ -869,6 +870,11 @@ static bool playStream(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp,
   return ret;
 }
 
+// The largest RTSP message (request line, headers and SDP) a Sunshine host accepts: it reads into a 2048-byte buffer and
+// refuses a message whose 24-byte encrypted header and payload reach the end of it (rtsp.cpp, "Exceeded maximum rtsp packet
+// size: 2048"). The same limit holds for plaintext RTSP.
+#define SUNSHINE_RTSP_MAX_MESSAGE_LENGTH (2048 - 24 - 1)
+
 // Send RTSP ANNOUNCE message
 static bool sendVideoAnnounce(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEXT rtsp, PRTSP_MESSAGE response, int *error) {
   RTSP_MESSAGE request;
@@ -900,6 +906,24 @@ static bool sendVideoAnnounce(PML_CONNECTION_CONTEXT ctx, PRTSP_HANDSHAKE_CONTEX
     snprintf(payloadLengthStr, sizeof(payloadLengthStr), "%d", payloadLength);
     if (!addOption(&request, "Content-length", payloadLengthStr)) {
       goto FreeMessage;
+    }
+
+    // A Sunshine host reads an RTSP message into a 2048-byte buffer and drops the connection when the encrypted header
+    // (24 bytes) and the message do not fit, without a word: the client only sees a reset while it reads the answer.
+    // Say it here instead, with the size, and do not send what the host would refuse.
+    if (IS_SUNSHINE_CTX(ctx)) {
+      int serializedLength = 0;
+      char *serialized = serializeRtspMessage(&request, &serializedLength);
+      if (serialized == NULL) {
+        goto FreeMessage;
+      }
+      free(serialized);
+      if (serializedLength > SUNSHINE_RTSP_MAX_MESSAGE_LENGTH) {
+        Limelog("RTSP ANNOUNCE is %d bytes, over the %d bytes a Sunshine host reads: not sent\n",
+                serializedLength, SUNSHINE_RTSP_MAX_MESSAGE_LENGTH);
+        *error = E2BIG;
+        goto FreeMessage;
+      }
     }
 
     ret = transactRtspMessage(ctx, rtsp, &request, response, false, error);
