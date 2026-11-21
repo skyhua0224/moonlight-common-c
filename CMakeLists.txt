@@ -221,6 +221,21 @@ if (BUILD_TESTING)
   endif()
   add_test(NAME control-stream-packet-tests COMMAND control-stream-packet-tests)
 
+  add_executable(connection-status-interval-tests
+    tests/ConnectionStatusIntervalTest.c
+  )
+  target_include_directories(connection-status-interval-tests PRIVATE src)
+  if(MSVC)
+    target_compile_options(connection-status-interval-tests PRIVATE /W3 /WX)
+  else()
+    target_compile_options(connection-status-interval-tests PRIVATE -Wall -Wextra -Werror)
+    # llround() and friends live in libm on Linux
+    if(UNIX AND NOT APPLE)
+      target_link_libraries(connection-status-interval-tests PRIVATE m)
+    endif()
+  endif()
+  add_test(NAME connection-status-interval-tests COMMAND connection-status-interval-tests)
+
   add_executable(cursor-protocol-golden-tests
     tests/CursorStreamGoldenTest.c
     src/CursorStream.c

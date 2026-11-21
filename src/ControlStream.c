@@ -1,5 +1,6 @@
 #include "Limelight-internal.h"
 #include "ControlStreamPacket.h"
+#include "ConnectionStatusInterval.h"
 #include "Ds5HapticsStream.h"
 #include "Ds5HapticsStateStream.h"
 #include "Ds5HapticsIrStream.h"
@@ -1079,9 +1080,10 @@ void connectionSawFrameCtx(PML_CONTROL_STREAM_CONTEXT ctx, uint32_t frameIndex) 
     if (now - ctx->intervalStartTimeMs >= CONN_STATUS_SAMPLE_PERIOD) {
         if (ctx->intervalTotalFrameCount != 0) {
             // Notify the client of connection status changes based on frame loss rate
-            int frameLossPercent = 100 - (ctx->intervalGoodFrameCount * 100) / ctx->intervalTotalFrameCount;
-            unsigned int frameLossBasisPoints = (unsigned int)llround(
-                10000.0 * (ctx->intervalTotalFrameCount - ctx->intervalGoodFrameCount) / ctx->intervalTotalFrameCount);
+            int frameLossPercent;
+            unsigned int frameLossBasisPoints;
+            computeIntervalFrameLoss(ctx->intervalTotalFrameCount, ctx->intervalGoodFrameCount,
+                                     &frameLossPercent, &frameLossBasisPoints);
             atomic_store_explicit(&ctx->lastIntervalLossBasisPoints, frameLossBasisPoints, memory_order_relaxed);
             if (ctx->lastConnectionStatusUpdate != CONN_STATUS_POOR &&
                     (frameLossPercent >= CONN_IMMEDIATE_POOR_LOSS_RATE ||
